@@ -17,8 +17,9 @@ export function Hero() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  const handleWorkspaceClick = (e) => {
+  const handleGetStarted = (e) => {
     e.preventDefault();
+    // Always navigate to workspace (authenticated or not)
     window.location.hash = '#workspace';
   };
 
@@ -42,53 +43,40 @@ export function Hero() {
       {/* Content */}
       <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <div className="animate-fade-in">
-          <h1 className="text-5xl md:text-7xl font-black text-white mb-6 leading-tight">
+          <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-black text-white mb-4 sm:mb-6 leading-tight">
             The Future of
             <span className="block bg-gradient-to-r from-yellow-400 to-pink-400 bg-clip-text text-transparent">
               Remote Collaboration
             </span>
           </h1>
-          <p className="text-xl md:text-2xl text-white/90 mb-8 max-w-4xl mx-auto leading-relaxed">
+          <p className="text-lg sm:text-xl md:text-2xl text-white/90 mb-6 sm:mb-8 max-w-4xl mx-auto leading-relaxed px-4">
             Experience seamless teamwork with HD video calls, real-time document editing, 
             interactive whiteboards, and intelligent task management — all in one powerful platform.
           </p>
           
-          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
-            {isAuthenticated ? (
-              <button
-                onClick={handleWorkspaceClick}
-                className="btn btn-secondary text-lg px-8 py-4 hover-scale"
-              >
-                <span className="mr-2">🚀</span>
-                Go to Dashboard
-              </button>
-            ) : (
-              <>
-                <button className="btn btn-secondary text-lg px-8 py-4 hover-scale">
-                  <span className="mr-2">✨</span>
-                  Start Free Trial
-                </button>
-                <button className="btn btn-glass text-lg px-8 py-4 hover-scale">
-                  <span className="mr-2">▶️</span>
-                  Watch Demo
-                </button>
-              </>
-            )}
+          <div className="flex justify-center items-center mb-8 sm:mb-12 px-4">
+            <button
+              onClick={handleGetStarted}
+              className={isAuthenticated ? "btn btn-secondary text-base sm:text-lg px-6 sm:px-8 py-3 sm:py-4 hover-scale" : "btn btn-dynamic-dark text-base sm:text-lg px-6 sm:px-8 py-3 sm:py-4 hover-scale"}
+            >
+              <span className="mr-2">{isAuthenticated ? "🚀" : "✨"}</span>
+              {isAuthenticated ? "Go to Dashboard" : "Get Started"}
+            </button>
           </div>
 
           {/* Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
-            <div className="card-glass p-6 animate-slide-up" style={{ animationDelay: '0.2s' }}>
-              <div className="text-3xl font-bold text-white mb-2">50K+</div>
-              <div className="text-white/80">Active Teams</div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-8 max-w-4xl mx-auto px-4">
+            <div className="card-glass p-4 sm:p-6 animate-slide-up" style={{ animationDelay: '0.2s' }}>
+              <div className="text-2xl sm:text-3xl font-bold text-white mb-2">50K+</div>
+              <div className="text-sm sm:text-base text-white/80">Active Teams</div>
             </div>
-            <div className="card-glass p-6 animate-slide-up" style={{ animationDelay: '0.4s' }}>
-              <div className="text-3xl font-bold text-white mb-2">99.9%</div>
-              <div className="text-white/80">Uptime</div>
+            <div className="card-glass p-4 sm:p-6 animate-slide-up" style={{ animationDelay: '0.4s' }}>
+              <div className="text-2xl sm:text-3xl font-bold text-white mb-2">99.9%</div>
+              <div className="text-sm sm:text-base text-white/80">Uptime</div>
             </div>
-            <div className="card-glass p-6 animate-slide-up" style={{ animationDelay: '0.6s' }}>
-              <div className="text-3xl font-bold text-white mb-2">150+</div>
-              <div className="text-white/80">Countries</div>
+            <div className="card-glass p-4 sm:p-6 animate-slide-up" style={{ animationDelay: '0.6s' }}>
+              <div className="text-2xl sm:text-3xl font-bold text-white mb-2">150+</div>
+              <div className="text-sm sm:text-base text-white/80">Countries</div>
             </div>
           </div>
         </div>

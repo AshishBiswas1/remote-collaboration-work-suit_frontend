@@ -1,203 +1,129 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSharedChat } from "../../hooks/useSharedChat";
 
-export function TeamChat({ roomId, user }) {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      user: 'System',
-      message: `Welcome to room ${roomId}!`,
-      timestamp: new Date().toISOString(),
-      type: 'system'
-    },
-    {
-      id: 2,
-      user: 'John Doe',
-      message: 'Hey everyone! Ready for our brainstorming session?',
-      timestamp: new Date(Date.now() - 300000).toISOString(),
-      type: 'user'
-    },
-    {
-      id: 3,
-      user: 'Jane Smith',
-      message: 'Yes! I have some great ideas to share.',
-      timestamp: new Date(Date.now() - 240000).toISOString(),
-      type: 'user'
-    }
-  ]);
-  const [newMessage, setNewMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
+export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackToLauncher }) {
+  const userId = user?.id || "anon";
+  const [viewRoom, setViewRoom] = useState(roomId);
+  const [text, setText] = useState("");
+  const endRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  // Use shared chat hook
+  const { messages, onlineUsers, isConnected, sendMessage } = useSharedChat(viewRoom, user);
+  
+  const displayName = user?.name || user?.email || "Anonymous User";
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  useEffect(() => setViewRoom(roomId), [roomId]);
+  useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
 
-  const sendMessage = () => {
-    if (!newMessage.trim()) return;
+  const canSend = useMemo(() => text.trim().length > 0, [text]);
 
-    const message = {
-      id: messages.length + 1,
-      user: user?.name || 'You',
-      message: newMessage,
-      timestamp: new Date().toISOString(),
-      type: 'user'
-    };
-
-    setMessages(prev => [...prev, message]);
-    setNewMessage('');
-
-    // Simulate someone else typing and responding
-    setTimeout(() => {
-      setIsTyping(true);
-      setTimeout(() => {
-        setIsTyping(false);
-        setMessages(prev => [...prev, {
-          id: prev.length + 1,
-          user: 'AI Assistant',
-          message: 'That\'s a great point! Let me add that to our whiteboard.',
-          timestamp: new Date().toISOString(),
-          type: 'user'
-        }]);
-      }, 2000);
-    }, 1000);
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-
-  const formatTime = (timestamp) => {
-    return new Date(timestamp).toLocaleTimeString([], { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-  };
-
-  const getInitials = (name) => {
-    return name.split(' ').map(n => n[0]).join('').toUpperCase();
-  };
-
-  const getAvatarColor = (name) => {
-    const colors = ['bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500'];
-    const index = name.charCodeAt(0) % colors.length;
-    return colors[index];
+  const send = () => {
+    if (!canSend || !viewRoom) return;
+    sendMessage(text);
+    setText("");
   };
 
   return (
-    <div className="card-modern h-full flex flex-col">
-      {/* Header */}
-      <div className="border-b p-4">
-        <h3 className="text-xl font-bold text-gray-900">Team Chat</h3>
-        <p className="text-sm text-gray-600">Room: {roomId} • 3 participants online</p>
+    <div className="h-full w-full bg-[#0f1115] text-white rounded-2xl overflow-hidden flex flex-col" style={{ minHeight: '600px' }}>
+      <div className="h-14 px-4 flex items-center justify-between bg-black/30 backdrop-blur border-b border-white/10">
+        <div className="flex items-center space-x-2">
+          <div className="font-semibold">Team Chat</div>
+          {viewRoom && (
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-xs text-white/70">
+                {isConnected ? 'Connected' : 'Offline'}
+              </span>
+              {onlineUsers.size > 0 && (
+                <span className="text-xs text-white/70">
+                  • {onlineUsers.size} online
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center space-x-2">
+          <button 
+            className="btn btn-glass py-2 text-red-400 hover:text-red-300" 
+            onClick={onBackToLauncher}
+          >
+            Leave Session
+          </button>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.user === (user?.name || 'You') ? 'justify-end' : 'justify-start'}`}>
-            <div className={`flex space-x-2 max-w-xs lg:max-w-md ${msg.user === (user?.name || 'You') ? 'flex-row-reverse space-x-reverse' : ''}`}>
-              {msg.type === 'user' && (
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-medium ${getAvatarColor(msg.user)}`}>
-                  {getInitials(msg.user)}
-                </div>
-              )}
-              <div className={`${msg.type === 'system' ? 'w-full text-center' : ''}`}>
-                {msg.type === 'system' ? (
-                  <div className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full inline-block">
-                    {msg.message}
-                  </div>
-                ) : (
-                  <>
-                    <div className={`px-4 py-2 rounded-2xl ${
-                      msg.user === (user?.name || 'You')
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-gray-100 text-gray-900'
-                    }`}>
-                      <p className="text-sm">{msg.message}</p>
-                    </div>
-                    <div className={`text-xs text-gray-500 mt-1 ${msg.user === (user?.name || 'You') ? 'text-right' : 'text-left'}`}>
-                      {msg.user !== (user?.name || 'You') && `${msg.user} • `}{formatTime(msg.timestamp)}
-                    </div>
-                  </>
-                )}
-              </div>
+      {/* Online users indicator */}
+      {viewRoom && onlineUsers.size > 0 && (
+        <div className="px-4 py-2 bg-blue-900/30 border-b border-white/10">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-white/70">Online:</span>
+            <div className="flex space-x-1 flex-wrap">
+              {Array.from(onlineUsers).map((user, index) => {
+                const [, userName] = user.split(':');
+                return (
+                  <span
+                    key={index}
+                    className="px-2 py-1 bg-green-600/20 text-green-300 text-xs rounded-full"
+                  >
+                    {userName}
+                  </span>
+                );
+              })}
             </div>
           </div>
-        ))}
-        
-        {/* Typing indicator */}
-        {isTyping && (
-          <div className="flex justify-start">
-            <div className="flex space-x-2">
-              <div className="w-8 h-8 rounded-full bg-gray-500 flex items-center justify-center text-white text-xs font-medium">
-                AI
-              </div>
-              <div className="bg-gray-100 px-4 py-2 rounded-2xl">
-                <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                  <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                </div>
-              </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto p-4 space-y-3">
+        {!viewRoom ? (
+          <div className="h-full flex items-center justify-center text-white/60">
+            <div className="text-center">
+              <div className="text-6xl mb-4">💬</div>
+              <h3 className="text-xl font-semibold mb-2">Select a session to start chatting</h3>
+              <p>Choose an active session from the dropdown above to join the team chat.</p>
             </div>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="text-white/60 text-sm">
+            No messages yet. {isConnected ? "Start the conversation!" : "Connecting..."}
+          </div>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} className="bg-white/5 border border-white/10 rounded-xl p-3">
+              <div className="text-xs text-white/70">
+                {m.user} • {new Date(m.ts).toLocaleTimeString()}
+                {isConnected && <span className="ml-2 text-green-400">●</span>}
+              </div>
+              <div className="mt-1">{m.body}</div>
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <div className="p-3 border-t border-white/10 bg-black/20 backdrop-blur">
+        <div className="flex items-center space-x-2">
+          <input
+            className="input-modern flex-1 bg-white text-gray-900 placeholder-gray-500 border border-gray-300"
+            placeholder={viewRoom ? (isConnected ? "Send a message to everyone in this session" : "Connecting...") : "Select a session first"}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
+            disabled={!viewRoom}
+          />
+          <button 
+            onClick={send} 
+            disabled={!canSend || !viewRoom} 
+            className="btn btn-primary py-2"
+          >
+            Send
+          </button>
+        </div>
+        {!isConnected && viewRoom && (
+          <div className="text-xs text-yellow-400 mt-2">
+            Note: Real-time messaging requires a Socket.IO server. Messages will be stored locally.
           </div>
         )}
-        
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input */}
-      <div className="border-t p-4">
-        <div className="flex space-x-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Type a message..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <button
-            onClick={sendMessage}
-            disabled={!newMessage.trim()}
-            className="px-4 py-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-          >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-            </svg>
-          </button>
-        </div>
-        
-        {/* Quick actions */}
-        <div className="flex space-x-2 mt-2">
-          <button
-            onClick={() => setNewMessage('👍')}
-            className="px-2 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-full"
-          >
-            👍
-          </button>
-          <button
-            onClick={() => setNewMessage('Great idea!')}
-            className="px-2 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-full"
-          >
-            Great idea!
-          </button>
-          <button
-            onClick={() => setNewMessage('Let me check that...')}
-            className="px-2 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-full"
-          >
-            Let me check...
-          </button>
-        </div>
       </div>
     </div>
   );

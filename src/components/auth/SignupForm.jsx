@@ -66,15 +66,15 @@ export function SignupForm({ onClose }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+        <div className="bg-red-50 border border-red-200 text-red-700 px-3 sm:px-4 py-2 sm:py-3 rounded-lg text-sm">
           {error}
         </div>
       )}
       
       <div>
-        <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1 sm:mb-2">
           Full Name
         </label>
         <input
@@ -85,13 +85,13 @@ export function SignupForm({ onClose }) {
           placeholder="Enter your full name"
           value={formData.name}
           onChange={handleChange}
-          className="input-modern"
+          className="input-modern text-sm sm:text-base"
           disabled={loading}
         />
       </div>
 
       <div>
-        <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1 sm:mb-2">
           Email Address
         </label>
         <input
@@ -102,13 +102,13 @@ export function SignupForm({ onClose }) {
           placeholder="Enter your email"
           value={formData.email}
           onChange={handleChange}
-          className="input-modern"
+          className="input-modern text-sm sm:text-base"
           disabled={loading}
         />
       </div>
 
       <div>
-        <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1 sm:mb-2">
           Password
         </label>
         <input
@@ -119,13 +119,13 @@ export function SignupForm({ onClose }) {
           placeholder="Create a password (min. 6 characters)"
           value={formData.password}
           onChange={handleChange}
-          className="input-modern"
+          className="input-modern text-sm sm:text-base"
           disabled={loading}
         />
       </div>
 
       <div>
-        <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1 sm:mb-2">
           Confirm Password
         </label>
         <input
@@ -136,7 +136,7 @@ export function SignupForm({ onClose }) {
           placeholder="Confirm your password"
           value={formData.confirmPassword}
           onChange={handleChange}
-          className="input-modern"
+          className="input-modern text-sm sm:text-base"
           disabled={loading}
         />
       </div>
@@ -146,10 +146,10 @@ export function SignupForm({ onClose }) {
           id="terms"
           type="checkbox"
           required
-          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5"
+          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mt-0.5 flex-shrink-0"
           disabled={loading}
         />
-        <label htmlFor="terms" className="ml-2 text-sm text-gray-600">
+        <label htmlFor="terms" className="ml-2 text-xs sm:text-sm text-gray-600">
           I agree to the{' '}
           <button type="button" className="text-blue-600 hover:text-blue-800 underline transition-colors">
             Terms of Service
@@ -164,11 +164,11 @@ export function SignupForm({ onClose }) {
       <button
         type="submit"
         disabled={loading}
-        className="btn-form-primary w-full py-3 text-base font-semibold"
+        className="btn-form-primary w-full py-2.5 sm:py-3 text-sm sm:text-base font-semibold"
       >
         {loading ? (
           <div className="flex items-center justify-center">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+            <div className="animate-spin rounded-full h-4 w-4 sm:h-5 sm:w-5 border-b-2 border-white mr-2"></div>
             Creating account...
           </div>
         ) : (

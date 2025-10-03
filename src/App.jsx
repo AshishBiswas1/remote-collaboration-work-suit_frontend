@@ -4,25 +4,23 @@ import { LandingPage } from "./components/landing/LandingPage";
 import { Workspace } from "./components/workspace/Workspace";
 
 function AppContent() {
-  const { isAuthenticated, loading } = useAuth();
+  const { loading } = useAuth();
   const [currentView, setCurrentView] = useState('landing');
 
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
-      if (hash === '#workspace' && isAuthenticated) {
+      if (hash === '#workspace') {
         setCurrentView('workspace');
       } else {
         setCurrentView('landing');
-        window.location.hash = '';
       }
     };
 
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
-    
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [isAuthenticated]);
+  }, []);
 
   if (loading) {
     return (

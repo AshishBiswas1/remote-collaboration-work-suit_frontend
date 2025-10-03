@@ -1,243 +1,546 @@
-import { useRef, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Canvas, Rect, Circle, FabricText, PencilBrush } from "fabric";
+import * as Y from "yjs";
+import { WebrtcProvider } from "y-webrtc";
 
-export function Whiteboard({ roomId }) {
+export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBackToLauncher }) {
   const canvasRef = useRef(null);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const fabricCanvasRef = useRef(null);
+  const [viewRoom, setViewRoom] = useState(roomId);
+  const [collaborationProvider, setCollaborationProvider] = useState(null);
+  const ydocRef = useRef(null);
+  const providerRef = useRef(null);
+  
+  // Drawing tools state
   const [currentTool, setCurrentTool] = useState('pen');
   const [currentColor, setCurrentColor] = useState('#000000');
-  const [currentWidth, setCurrentWidth] = useState(2);
-  const [isConnected] = useState(true);
+  const [brushSize, setBrushSize] = useState(5);
+  const [canvasBounds, setCanvasBounds] = useState({ width: 3000, height: 2000 });
+  const [minCanvasSize, setMinCanvasSize] = useState({ width: 3000, height: 2000 });
+  const [scrollPosition, setScrollPosition] = useState({ x: 0, y: 0 });
+  const scrollContainerRef = useRef(null);
+  
+  const displayName = user?.name || user?.email || "Anonymous User";
 
-  const colors = ['#000000', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500'];
-  const widths = [1, 2, 5, 10, 15, 20];
-
+  // Redirect to launcher if no session is selected
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!viewRoom && onBackToLauncher) {
+      onBackToLauncher();
+    }
+  }, [viewRoom, onBackToLauncher]);
 
-    const ctx = canvas.getContext('2d');
+  // Initialize Yjs collaboration when room changes
+  useEffect(() => {
+    if (!viewRoom) return;
+
+    // Clean up previous collaboration
+    if (providerRef.current) {
+      providerRef.current.destroy();
+    }
+
+    // Create new Yjs document and WebRTC provider for real-time collaboration
+    const ydoc = new Y.Doc();
+    const provider = new WebrtcProvider(`whiteboard-${viewRoom}`, ydoc, {
+      signaling: ["wss://signaling.yjs.dev"],
+    });
+
+    ydocRef.current = ydoc;
+    providerRef.current = provider;
+    setCollaborationProvider(provider);
+
+    return () => {
+      if (provider) {
+        provider.destroy();
+      }
+    };
+  }, [viewRoom]);
+
+  // Initialize Fabric.js canvas
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    // Calculate initial canvas size (larger than container to allow scrolling)
+    const container = canvasRef.current.parentElement;
+    const initialWidth = Math.max(container.clientWidth, canvasBounds.width);
+    const initialHeight = Math.max(container.clientHeight, canvasBounds.height);
+
+    const canvas = new Canvas(canvasRef.current, {
+      width: initialWidth,
+      height: initialHeight,
+      backgroundColor: '#ffffff',
+      selection: currentTool === 'select',
+      isDrawingMode: currentTool === 'pen',
+    });
+
+    fabricCanvasRef.current = canvas;
+
+    // Configure drawing brush
+    canvas.isDrawingMode = currentTool === 'pen';
     
-    // Set canvas size
-    const resizeCanvas = () => {
-      const rect = canvas.parentElement.getBoundingClientRect();
-      canvas.width = rect.width - 32; // Account for padding
-      canvas.height = 400;
-      
-      // Set drawing styles
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const brush = new PencilBrush(canvas);
+    brush.width = brushSize;
+    brush.color = currentColor;
+    canvas.freeDrawingBrush = brush;
+
+    // Function to expand canvas - DISABLED to prevent repositioning
+    const expandCanvasIfNeeded = () => {
+      // Expansion disabled to prevent object repositioning
+      return;
     };
 
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    // Event listeners for expansion - DISABLED to prevent repositioning
+    // canvas.on('path:created', expandCanvasIfNeeded);
+    // canvas.on('object:added', expandCanvasIfNeeded);
+    // canvas.on('object:modified', expandCanvasIfNeeded);
 
-    return () => window.removeEventListener('resize', resizeCanvas);
+    canvas.renderAll();
+
+    // Handle container resize (but maintain larger canvas)
+    const handleResize = () => {
+      const container = canvasRef.current.parentElement;
+      const newMinWidth = Math.max(container.clientWidth, minCanvasSize.width);
+      const newMinHeight = Math.max(container.clientHeight, minCanvasSize.height);
+      
+      if (newMinWidth > canvas.width || newMinHeight > canvas.height) {
+        canvas.setDimensions({
+          width: Math.max(canvas.width, newMinWidth),
+          height: Math.max(canvas.height, newMinHeight),
+        });
+        canvas.renderAll();
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      canvas.dispose();
+    };
+  }, [viewRoom, canvasBounds.width, canvasBounds.height, minCanvasSize]);
+
+  // Scroll functionality
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      setScrollPosition({
+        x: container.scrollLeft,
+        y: container.scrollTop
+      });
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
-  const startDrawing = (e) => {
-    if (currentTool !== 'pen') return;
+  // Manual canvas expansion function - Minimal approach to prevent repositioning
+  const expandCanvasManually = () => {
+    if (!fabricCanvasRef.current) return;
     
-    setIsDrawing(true);
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
+    const canvas = fabricCanvasRef.current;
+    const expandAmount = 500;
     
-    ctx.beginPath();
-    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+    // Simple dimension change only - no other operations
+    const newWidth = canvas.width + expandAmount;
+    const newHeight = canvas.height + expandAmount;
+    
+    canvas.setWidth(newWidth);
+    canvas.setHeight(newHeight);
+    
+    setCanvasBounds({ width: newWidth, height: newHeight });
   };
 
-  const draw = (e) => {
-    if (!isDrawing || currentTool !== 'pen') return;
-    
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
-    
-    ctx.lineWidth = currentWidth;
-    ctx.strokeStyle = currentColor;
-    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
-    ctx.stroke();
+  // Removed canvas panning functions to prevent repositioning
+  
+  // Smooth scroll functions (keeping for container scrolling compatibility)
+  const scrollToCenter = () => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const centerX = (canvasBounds.width - container.clientWidth) / 2;
+    const centerY = (canvasBounds.height - container.clientHeight) / 2;
+
+    container.scrollTo({
+      left: Math.max(0, centerX),
+      top: Math.max(0, centerY),
+      behavior: 'smooth'
+    });
   };
 
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
+  const scrollToFitContent = () => {
+    if (!fabricCanvasRef.current) return;
 
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  };
-
-  const addShape = (shape) => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const canvas = fabricCanvasRef.current;
+    const objects = canvas.getObjects();
     
-    ctx.strokeStyle = currentColor;
-    ctx.lineWidth = currentWidth;
-    ctx.fillStyle = 'transparent';
-    
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-    
-    if (shape === 'rectangle') {
-      ctx.strokeRect(centerX - 50, centerY - 30, 100, 60);
-    } else if (shape === 'circle') {
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, 40, 0, 2 * Math.PI);
-      ctx.stroke();
+    if (objects.length === 0) {
+      // No objects to fit - do nothing to preserve current position
+      return;
     }
+
+    // Calculate bounding box of all objects
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    objects.forEach(obj => {
+      const bounds = obj.getBoundingRect();
+      minX = Math.min(minX, bounds.left);
+      minY = Math.min(minY, bounds.top);
+      maxX = Math.max(maxX, bounds.left + bounds.width);
+      maxY = Math.max(maxY, bounds.top + bounds.height);
+    });
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Center the content with some padding
+    const padding = 50;
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+    
+    const scrollX = Math.max(0, minX - padding - (container.clientWidth - contentWidth) / 2);
+    const scrollY = Math.max(0, minY - padding - (container.clientHeight - contentHeight) / 2);
+
+    container.scrollTo({
+      left: scrollX,
+      top: scrollY,
+      behavior: 'smooth'
+    });
+  };
+
+  const scrollByAmount = (deltaX, deltaY) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    container.scrollBy({
+      left: deltaX,
+      top: deltaY,
+      behavior: 'smooth'
+    });
+  };
+
+  // Update canvas tool settings
+  useEffect(() => {
+    if (!fabricCanvasRef.current) return;
+
+    const canvas = fabricCanvasRef.current;
+    
+    // Set drawing mode first
+    canvas.isDrawingMode = currentTool === 'pen';
+    canvas.selection = currentTool === 'select';
+
+    // Configure brush properties when in drawing mode
+    if (currentTool === 'pen') {
+      // Explicitly recreate the brush with current settings
+      const brush = new PencilBrush(canvas);
+      brush.width = brushSize;
+      brush.color = currentColor;
+      canvas.freeDrawingBrush = brush;
+    }
+    
+    // Force canvas update
+    canvas.renderAll();
+  }, [currentTool, currentColor, brushSize]);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (providerRef.current) {
+        providerRef.current.destroy();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setViewRoom(roomId);
+  }, [roomId]);
+
+  // Tool functions
+  const addRectangle = () => {
+    if (!fabricCanvasRef.current) return;
+    
+    const rect = new Rect({
+      left: 100,
+      top: 100,
+      width: 100,
+      height: 100,
+      fill: 'transparent',
+      stroke: currentColor,
+      strokeWidth: 2,
+    });
+    
+    fabricCanvasRef.current.add(rect);
+  };
+
+  const addCircle = () => {
+    if (!fabricCanvasRef.current) return;
+    
+    const circle = new Circle({
+      left: 100,
+      top: 100,
+      radius: 50,
+      fill: 'transparent',
+      stroke: currentColor,
+      strokeWidth: 2,
+    });
+    
+    fabricCanvasRef.current.add(circle);
   };
 
   const addText = () => {
-    const text = prompt('Enter text:');
-    if (!text) return;
+    if (!fabricCanvasRef.current) return;
     
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const text = new FabricText('Click to edit', {
+      left: 100,
+      top: 100,
+      fontFamily: 'Arial',
+      fontSize: 20,
+      fill: currentColor,
+      editable: true,
+    });
     
-    ctx.fillStyle = currentColor;
-    ctx.font = `${Math.max(currentWidth * 8, 16)}px Arial`;
-    ctx.fillText(text, canvas.width / 2 - 50, canvas.height / 2);
+    fabricCanvasRef.current.add(text);
   };
 
-  const exportImage = () => {
-    const canvas = canvasRef.current;
-    const link = document.createElement('a');
-    link.download = `whiteboard-${roomId}.png`;
-    link.href = canvas.toDataURL();
-    link.click();
+  const clearCanvas = () => {
+    if (!fabricCanvasRef.current) return;
+    fabricCanvasRef.current.clear();
+    fabricCanvasRef.current.backgroundColor = '#ffffff';
+    fabricCanvasRef.current.renderAll();
   };
 
   return (
-    <div className="card-modern">
-      {/* Header */}
-      <div className="border-b p-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-xl font-bold text-gray-900">Collaborative Whiteboard</h3>
+    <div className="h-full w-full bg-gray-50 rounded-2xl overflow-hidden flex flex-col" style={{ minHeight: '700px' }}>
+      {/* Header with instructions and tools */}
+      <div className="bg-white border-b border-gray-200 shadow-sm">
+        {/* Instructions Banner */}
+        <div className="px-3 sm:px-4 py-2 sm:py-3 bg-blue-50 border-b border-blue-100">
           <div className="flex items-center space-x-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-            <span className="text-sm text-gray-600">Room: {roomId}</span>
+            <div className="text-blue-600 text-sm flex-shrink-0">ℹ️</div>
+            <div className="text-xs sm:text-sm text-blue-800">
+              <strong>How to use:</strong> 
+              <span className="hidden sm:inline"> Select a session below → Click "Join Session" → Choose your drawing tool and start creating! 
+              Full collaborative whiteboard with shapes, text, and freehand drawing.</span>
+              <span className="sm:hidden"> Join a session and start drawing!</span>
+            </div>
+          </div>
+        </div>
+        
+        {/* Tools and Session Management */}
+        <div className="px-3 sm:px-4 py-3 sm:py-4">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-3 lg:space-y-0">
+            {/* Drawing Tools */}
+            <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
+              <h2 className="text-base sm:text-lg font-semibold text-gray-800">Collaborative Whiteboard</h2>
+              
+              {viewRoom && (
+                <div className="flex flex-wrap items-center gap-2 sm:gap-2 border-l-0 sm:border-l border-gray-300 sm:pl-4">
+                  {/* Tool Selection */}
+                  <button
+                    onClick={() => setCurrentTool('pen')}
+                    className={`px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                      currentTool === 'pen' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Draw
+                  </button>
+                  
+                  <button
+                    onClick={() => setCurrentTool('select')}
+                    className={`px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                      currentTool === 'select' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Select
+                  </button>
+                  
+                  <button
+                    onClick={addRectangle}
+                    className="px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg text-xs sm:text-sm font-medium transition-colors"
+                  >
+                    <span className="hidden sm:inline">Rectangle</span>
+                    <span className="sm:hidden">Rect</span>
+                  </button>
+                  
+                  <button
+                    onClick={addCircle}
+                    className="px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg text-xs sm:text-sm font-medium transition-colors"
+                  >
+                    Circle
+                  </button>
+                  
+                  <button
+                    onClick={addText}
+                    className="px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg text-xs sm:text-sm font-medium transition-colors"
+                  >
+                    Text
+                  </button>
+                  
+                  {/* Color Picker */}
+                  <div className="flex items-center space-x-1 sm:space-x-2 border-l-0 sm:border-l border-gray-300 sm:pl-4">
+                    <label className="text-xs sm:text-sm text-gray-600 hidden sm:block">Color:</label>
+                    <input
+                      type="color"
+                      value={currentColor}
+                      onChange={(e) => setCurrentColor(e.target.value)}
+                      className="w-6 h-6 sm:w-8 sm:h-8 rounded border border-gray-300 cursor-pointer"
+                    />
+                  </div>
+                  
+                  {/* Brush Size */}
+                  <div className="flex items-center space-x-1 sm:space-x-2">
+                    <label className="text-xs sm:text-sm text-gray-600 hidden sm:block">Size:</label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="20"
+                      value={brushSize}
+                      onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                      className="w-12 sm:w-20"
+                    />
+                    <span className="text-xs sm:text-sm text-gray-600 w-4 sm:w-6">{brushSize}</span>
+                  </div>
+                  
+                  {/* Canvas Pan Controls - Disabled to prevent repositioning */}
+                  <div className="flex items-center space-x-1 border-l border-gray-300 pl-2">
+                    <button
+                      onClick={() => {}} // Function removed to prevent repositioning
+                      className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 transition-colors"
+                      title="Reset View"
+                    >
+                      �
+                    </button>
+                    <button
+                      onClick={() => {}} // Function removed to prevent repositioning
+                      className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 transition-colors"
+                      title="Center Content"
+                    >
+                      🎯
+                    </button>
+                    <div className="flex flex-col space-y-0.5">
+                      <button
+                        onClick={() => {}} // Panning disabled to prevent repositioning
+                        className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
+                        title="Pan Up"
+                      >
+                        ⬆️
+                      </button>
+                      <div className="flex space-x-0.5">
+                        <button
+                          onClick={() => {}} // Panning disabled to prevent repositioning
+                          className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
+                          title="Pan Left"
+                        >
+                          ⬅️
+                        </button>
+                        <button
+                          onClick={() => {}} // Panning disabled to prevent repositioning
+                          className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
+                          title="Pan Right"
+                        >
+                          ➡️
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => {}} // Panning disabled to prevent repositioning
+                        className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
+                        title="Pan Down"
+                      >
+                        ⬇️
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Expand Canvas Button */}
+                  <button
+                    onClick={expandCanvasManually}
+                    className="px-2 sm:px-3 py-1.5 sm:py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs sm:text-sm font-medium"
+                    title="Expand Canvas (+500px)"
+                  >
+                    Expand
+                  </button>
+                  
+                  {/* Clear Button */}
+                  <button
+                    onClick={clearCanvas}
+                    className="px-2 sm:px-3 py-1.5 sm:py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-xs sm:text-sm font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            {/* Session Info and Leave Button */}
+            <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-3">
+              <div className="text-xs sm:text-sm text-gray-600">
+                {viewRoom ? (
+                  <span className="px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs">
+                    ✓ Connected to: {mySessions.find(s => s.id === viewRoom)?.name || viewRoom}
+                  </span>
+                ) : (
+                  <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs">
+                    ! No session selected
+                  </span>
+                )}
+              </div>
+              
+              {viewRoom && (
+                <button 
+                  className="px-3 sm:px-4 py-1.5 sm:py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg shadow-sm transition-all duration-200 border-2 border-red-600 hover:border-red-700 text-xs sm:text-sm" 
+                  onClick={() => onBackToLauncher?.()}
+                  title="Leave current session and return to workspace launcher"
+                >
+                  Leave Session
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Toolbar */}
-      <div className="border-b p-4">
-        <div className="flex items-center space-x-4 flex-wrap gap-2">
-          {/* Tools */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setCurrentTool('select')}
-              className={`p-2 rounded ${currentTool === 'select' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100'}`}
-              title="Select"
-            >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M3 3a1 1 0 011 1v12a1 1 0 11-2 0V4a1 1 0 011-1zm7.707 3.293a1 1 0 010 1.414L9.414 9H17a1 1 0 110 2H9.414l1.293 1.293a1 1 0 01-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0z" clipRule="evenodd" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setCurrentTool('pen')}
-              className={`p-2 rounded ${currentTool === 'pen' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100'}`}
-              title="Pen"
-            >
-              ✏️
-            </button>
+      {/* Canvas Area */}
+      <div className="flex-1 relative bg-white overflow-auto">
+        {viewRoom ? (
+          <div className="min-w-full min-h-full relative" style={{ width: canvasBounds.width, height: canvasBounds.height }}>
+            <canvas
+              ref={canvasRef}
+              className="absolute top-0 left-0"
+              style={{ 
+                display: 'block',
+                touchAction: 'none'
+              }}
+            />
+            {/* Canvas size indicator */}
+            <div className="absolute top-4 right-4 bg-black/70 text-white px-3 py-2 rounded-lg text-xs z-10">
+              Canvas: {canvasBounds.width} × {canvasBounds.height}px
+            </div>
           </div>
-
-          <div className="w-px h-6 bg-gray-300"></div>
-
-          {/* Shapes */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => addShape('rectangle')}
-              className="p-2 bg-gray-100 hover:bg-gray-200 rounded"
-              title="Rectangle"
-            >
-              ⬛
-            </button>
-            <button
-              onClick={() => addShape('circle')}
-              className="p-2 bg-gray-100 hover:bg-gray-200 rounded"
-              title="Circle"
-            >
-              ⭕
-            </button>
-            <button
-              onClick={addText}
-              className="p-2 bg-gray-100 hover:bg-gray-200 rounded"
-              title="Text"
-            >
-              T
-            </button>
+        ) : (
+          <div className="h-full flex items-center justify-center bg-gray-50 p-4">
+            <div className="text-center max-w-md mx-auto">
+              <div className="text-3xl sm:text-4xl mb-3 sm:mb-4">🎨</div>
+              <h3 className="text-lg sm:text-xl font-bold mb-2 sm:mb-3 text-gray-800">Ready to Create Together?</h3>
+              <div className="space-y-2 sm:space-y-3 text-gray-600">
+                <p className="text-sm sm:text-base">Choose a session from the dropdown above to start collaborating on the whiteboard.</p>
+                <div className="bg-white border border-gray-200 rounded-lg p-2 sm:p-3 text-xs sm:text-sm">
+                  <div className="font-semibold text-gray-800 mb-1 sm:mb-2">Features Available:</div>
+                  <ul className="text-left space-y-0.5 sm:space-y-1">
+                    <li>• Freehand drawing</li>
+                    <li>• Shapes (rectangles, circles)</li>
+                    <li>• Text annotations</li>
+                    <li>• Color customization</li>
+                    <li>• Real-time collaboration</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div className="w-px h-6 bg-gray-300"></div>
-
-          {/* Colors */}
-          <div className="flex items-center space-x-1">
-            {colors.map(color => (
-              <button
-                key={color}
-                onClick={() => setCurrentColor(color)}
-                className={`w-6 h-6 rounded border-2 ${currentColor === color ? 'border-gray-800' : 'border-gray-300'}`}
-                style={{ backgroundColor: color }}
-                title={`Color: ${color}`}
-              />
-            ))}
-          </div>
-
-          <div className="w-px h-6 bg-gray-300"></div>
-
-          {/* Width */}
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600">Size:</span>
-            <select
-              value={currentWidth}
-              onChange={(e) => setCurrentWidth(Number(e.target.value))}
-              className="px-2 py-1 border border-gray-300 rounded text-sm"
-            >
-              {widths.map(width => (
-                <option key={width} value={width}>{width}px</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="w-px h-6 bg-gray-300"></div>
-
-          {/* Actions */}
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={clearCanvas}
-              className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm"
-            >
-              Clear
-            </button>
-            <button
-              onClick={exportImage}
-              className="px-3 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded text-sm"
-            >
-              Export
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Canvas */}
-      <div className="p-4">
-        <div className="border border-gray-200 rounded-lg overflow-hidden">
-          <canvas
-            ref={canvasRef}
-            className="cursor-crosshair"
-            onMouseDown={startDrawing}
-            onMouseMove={draw}
-            onMouseUp={stopDrawing}
-            onMouseLeave={stopDrawing}
-          />
-        </div>
+        )}
       </div>
     </div>
   );

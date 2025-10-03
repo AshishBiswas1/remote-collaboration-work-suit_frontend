@@ -1,221 +1,333 @@
-import { useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { io } from "socket.io-client";
 
-export function TaskBoard({ roomId }) {
-  const [tasks, setTasks] = useState({
-    todo: [
-      { id: 1, title: 'Setup project repository', description: 'Initialize Git repo and basic structure', assignee: 'John', priority: 'high' },
-      { id: 2, title: 'Design user interface', description: 'Create wireframes and mockups', assignee: 'Jane', priority: 'medium' }
-    ],
-    inProgress: [
-      { id: 3, title: 'Implement authentication', description: 'User login and registration system', assignee: 'Mike', priority: 'high' },
-    ],
-    review: [
-      { id: 4, title: 'Code review: API endpoints', description: 'Review REST API implementation', assignee: 'Sarah', priority: 'medium' }
-    ],
-    done: [
-      { id: 5, title: 'Project planning meeting', description: 'Initial project kickoff and planning', assignee: 'Team', priority: 'low' }
-    ]
-  });
+function loadJSON(key, fallback) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } }
+function saveJSON(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
+function tasksKey(userId, roomId) { return `cs:tasks:${userId || "anon"}:room:${roomId || "none"}`; }
+const defaultBoard = () => ([
+  { id: "todo", name: "To do", items: [] },
+  { id: "doing", name: "In progress", items: [] },
+  { id: "done", name: "Done", items: [] },
+]);
 
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [isAddingTask, setIsAddingTask] = useState(false);
+export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBackToLauncher }) {
+  const userId = user?.id || "anon";
+  const [viewRoom, setViewRoom] = useState(roomId);
+  const [board, setBoard] = useState(() => loadJSON(tasksKey(userId, viewRoom), defaultBoard()));
+  const [title, setTitle] = useState("");
+  const socketRef = useRef(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState(new Set());
 
-  const columns = [
-    { id: 'todo', title: 'To Do', color: 'bg-gray-100', headerColor: 'bg-gray-200' },
-    { id: 'inProgress', title: 'In Progress', color: 'bg-blue-100', headerColor: 'bg-blue-200' },
-    { id: 'review', title: 'Review', color: 'bg-yellow-100', headerColor: 'bg-yellow-200' },
-    { id: 'done', title: 'Done', color: 'bg-green-100', headerColor: 'bg-green-200' }
-  ];
+  const displayName = user?.name || user?.email || "Anonymous User";
 
-  const priorityColors = {
-    high: 'bg-red-100 text-red-800',
-    medium: 'bg-yellow-100 text-yellow-800',
-    low: 'bg-green-100 text-green-800'
-  };
+  useEffect(() => setViewRoom(roomId), [roomId]);
+  useEffect(() => setBoard(loadJSON(tasksKey(userId, viewRoom), defaultBoard())), [userId, viewRoom]);
+  useEffect(() => saveJSON(tasksKey(userId, viewRoom), board), [board, userId, viewRoom]);
 
-  const addTask = () => {
-    if (!newTaskTitle.trim()) return;
+  // Socket.IO connection for real-time task board updates
+  useEffect(() => {
+    if (!viewRoom) {
+      // Disconnect if no room
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setIsConnected(false);
+        setOnlineUsers(new Set());
+      }
+      return;
+    }
 
-    const newTask = {
-      id: Date.now(),
-      title: newTaskTitle,
-      description: '',
-      assignee: 'You',
-      priority: 'medium'
+    // Connect to Socket.IO server for task board
+    const socket = io("ws://localhost:3001", {
+      query: {
+        roomId: `taskboard-${viewRoom}`,
+        userId: userId,
+        userName: displayName,
+      },
+    });
+
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      setIsConnected(true);
+      socket.emit("join-taskboard", { 
+        roomId: `taskboard-${viewRoom}`, 
+        userId, 
+        userName: displayName,
+        currentBoard: board 
+      });
+    });
+
+    socket.on("disconnect", () => {
+      setIsConnected(false);
+      setOnlineUsers(new Set());
+    });
+
+    socket.on("user-joined", ({ userId: joinedUserId, userName }) => {
+      setOnlineUsers(prev => new Set([...prev, `${joinedUserId}:${userName}`]));
+    });
+
+    socket.on("user-left", ({ userId: leftUserId }) => {
+      setOnlineUsers(prev => {
+        const newSet = new Set(prev);
+        for (const user of newSet) {
+          if (user.startsWith(`${leftUserId}:`)) {
+            newSet.delete(user);
+            break;
+          }
+        }
+        return newSet;
+      });
+    });
+
+    socket.on("online-users", (users) => {
+      setOnlineUsers(new Set(users.map(u => `${u.userId}:${u.userName}`)));
+    });
+
+    socket.on("board-updated", (newBoard) => {
+      setBoard(newBoard);
+      saveJSON(tasksKey(userId, viewRoom), newBoard);
+    });
+
+    socket.on("task-added", ({ columnId, task }) => {
+      setBoard(prev => {
+        const newBoard = prev.map(col => 
+          col.id === columnId 
+            ? { ...col, items: [...col.items, task] }
+            : col
+        );
+        saveJSON(tasksKey(userId, viewRoom), newBoard);
+        return newBoard;
+      });
+    });
+
+    socket.on("task-moved", ({ taskId, fromColumnId, toColumnId, newIndex }) => {
+      setBoard(prev => {
+        const newBoard = [...prev];
+        const fromColumn = newBoard.find(col => col.id === fromColumnId);
+        const toColumn = newBoard.find(col => col.id === toColumnId);
+        
+        if (fromColumn && toColumn) {
+          const taskIndex = fromColumn.items.findIndex(item => item.id === taskId);
+          if (taskIndex !== -1) {
+            const [task] = fromColumn.items.splice(taskIndex, 1);
+            toColumn.items.splice(newIndex, 0, task);
+          }
+        }
+        
+        saveJSON(tasksKey(userId, viewRoom), newBoard);
+        return newBoard;
+      });
+    });
+
+    return () => {
+      socket.disconnect();
+      setIsConnected(false);
+      setOnlineUsers(new Set());
+    };
+  }, [viewRoom, userId, displayName]);
+
+  const addCard = (colId) => {
+    if (!title.trim() || !viewRoom) return;
+    
+    const newTask = { 
+      id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, 
+      text: title.trim(),
+      createdBy: displayName,
+      createdAt: Date.now()
     };
 
-    setTasks(prev => ({
-      ...prev,
-      todo: [...prev.todo, newTask]
-    }));
-
-    setNewTaskTitle('');
-    setIsAddingTask(false);
+    // If connected to Socket.IO, emit the task addition
+    if (socketRef.current && isConnected) {
+      socketRef.current.emit("add-task", { columnId: colId, task: newTask });
+    } else {
+      // Fallback to local update
+      setBoard((prev) =>
+        prev.map((c) =>
+          c.id === colId ? { ...c, items: [newTask, ...c.items] } : c
+        )
+      );
+    }
+    
+    setTitle("");
   };
 
-  const moveTask = (taskId, fromColumn, toColumn) => {
-    const task = tasks[fromColumn].find(t => t.id === taskId);
-    if (!task) return;
+  const moveCard = (fromId, toId, card) => {
+    if (fromId === toId || !viewRoom) return;
+    
+    const toColumn = board.find(c => c.id === toId);
+    const newIndex = 0; // Add to beginning of target column
 
-    setTasks(prev => ({
-      ...prev,
-      [fromColumn]: prev[fromColumn].filter(t => t.id !== taskId),
-      [toColumn]: [...prev[toColumn], task]
-    }));
+    // If connected to Socket.IO, emit the move
+    if (socketRef.current && isConnected) {
+      socketRef.current.emit("move-task", { 
+        taskId: card.id, 
+        fromColumnId: fromId, 
+        toColumnId: toId, 
+        newIndex 
+      });
+    } else {
+      // Fallback to local update
+      setBoard((prev) => {
+        const removed = prev.map((c) =>
+          c.id === fromId ? { ...c, items: c.items.filter((i) => i.id !== card.id) } : c
+        );
+        return removed.map((c) =>
+          c.id === toId ? { ...c, items: [card, ...c.items] } : c
+        );
+      });
+    }
   };
 
-  const deleteTask = (taskId, column) => {
-    setTasks(prev => ({
-      ...prev,
-      [column]: prev[column].filter(t => t.id !== taskId)
-    }));
+  const removeCard = (colId, cardId) => {
+    if (!viewRoom) return;
+
+    // If connected to Socket.IO, emit the removal
+    if (socketRef.current && isConnected) {
+      socketRef.current.emit("remove-task", { columnId: colId, taskId: cardId });
+    } else {
+      // Fallback to local update
+      setBoard((prev) =>
+        prev.map((c) =>
+          c.id === colId ? { ...c, items: c.items.filter((i) => i.id !== cardId) } : c
+        )
+      );
+    }
   };
 
-  const TaskCard = ({ task, columnId }) => (
-    <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start mb-2">
-        <h4 className="text-sm font-medium text-gray-900 line-clamp-2">{task.title}</h4>
-        <div className="flex space-x-1 ml-2">
-          {columnId !== 'done' && (
-            <button
-              onClick={() => {
-                const nextColumn = columnId === 'todo' ? 'inProgress' 
-                  : columnId === 'inProgress' ? 'review' 
-                  : 'done';
-                moveTask(task.id, columnId, nextColumn);
-              }}
-              className="text-gray-400 hover:text-blue-600 p-1"
-              title="Move forward"
-            >
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10.293 15.707a1 1 0 010-1.414L14.586 10l-4.293-4.293a1 1 0 111.414-1.414l5 5a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0z" clipRule="evenodd" />
-              </svg>
-            </button>
+  return (
+    <div className="h-full w-full bg-[#0f1115] text-white rounded-2xl overflow-hidden flex flex-col" style={{ minHeight: '600px' }}>
+      <div className="h-14 px-4 flex items-center justify-between bg-black/30 backdrop-blur border-b border-white/10">
+        <div className="flex items-center space-x-2">
+          <div className="font-semibold">Task Board</div>
+          {viewRoom && (
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-xs text-white/70">
+                {isConnected ? 'Synced' : 'Offline'}
+              </span>
+              {onlineUsers.size > 0 && (
+                <span className="text-xs text-white/70">
+                  • {onlineUsers.size} collaborating
+                </span>
+              )}
+            </div>
           )}
-          <button
-            onClick={() => deleteTask(task.id, columnId)}
-            className="text-gray-400 hover:text-red-600 p-1"
-            title="Delete task"
+        </div>
+        <div className="flex items-center space-x-2">
+          <button 
+            className="btn btn-glass py-2 text-red-400 hover:text-red-300" 
+            onClick={onBackToLauncher}
           >
-            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-            </svg>
+            Leave Session
           </button>
         </div>
       </div>
-      
-      {task.description && (
-        <p className="text-xs text-gray-600 mb-2 line-clamp-2">{task.description}</p>
-      )}
-      
-      <div className="flex justify-between items-center">
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${priorityColors[task.priority]}`}>
-          {task.priority}
-        </span>
-        <div className="flex items-center space-x-1">
-          <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
-            <span className="text-xs text-white font-medium">{task.assignee[0]}</span>
-          </div>
-          <span className="text-xs text-gray-600">{task.assignee}</span>
-        </div>
-      </div>
-    </div>
-  );
 
-  return (
-    <div className="card-modern">
-      {/* Header */}
-      <div className="border-b p-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-xl font-bold text-gray-900">Task Board</h3>
-          <div className="flex items-center space-x-4">
-            <span className="text-sm text-gray-600">Room: {roomId}</span>
-            <button
-              onClick={() => setIsAddingTask(true)}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
-            >
-              + Add Task
-            </button>
-          </div>
-        </div>
-
-        {/* Add task form */}
-        {isAddingTask && (
-          <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-            <div className="flex space-x-2">
-              <input
-                type="text"
-                value={newTaskTitle}
-                onChange={(e) => setNewTaskTitle(e.target.value)}
-                placeholder="Enter task title..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                onKeyPress={(e) => e.key === 'Enter' && addTask()}
-                autoFocus
-              />
-              <button
-                onClick={addTask}
-                className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
-              >
-                Add
-              </button>
-              <button
-                onClick={() => {
-                  setIsAddingTask(false);
-                  setNewTaskTitle('');
-                }}
-                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
-              >
-                Cancel
-              </button>
+      {/* Online collaborators indicator */}
+      {viewRoom && onlineUsers.size > 0 && (
+        <div className="px-4 py-2 bg-blue-900/30 border-b border-white/10">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-white/70">Collaborating:</span>
+            <div className="flex space-x-1 flex-wrap">
+              {Array.from(onlineUsers).map((user, index) => {
+                const [, userName] = user.split(':');
+                return (
+                  <span
+                    key={index}
+                    className="px-2 py-1 bg-purple-600/20 text-purple-300 text-xs rounded-full"
+                  >
+                    {userName}
+                  </span>
+                );
+              })}
             </div>
           </div>
-        )}
+        </div>
+      )}
+
+      <div className="p-4 flex items-center space-x-2">
+        <input 
+          className="input-modern flex-1 bg-white text-gray-900 placeholder-gray-500 border border-gray-300" 
+          placeholder={viewRoom ? "Task title…" : "Select a session first"} 
+          value={title} 
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addCard("todo")}
+          disabled={!viewRoom}
+        />
+        <button 
+          className="btn btn-primary py-2" 
+          onClick={() => addCard("todo")}
+          disabled={!title.trim() || !viewRoom}
+        >
+          Add Task
+        </button>
       </div>
 
-      {/* Board */}
-      <div className="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {columns.map(column => (
-            <div key={column.id} className={`${column.color} rounded-lg p-4`}>
-              <div className={`${column.headerColor} -mx-4 -mt-4 px-4 py-3 rounded-t-lg mb-4`}>
-                <div className="flex justify-between items-center">
-                  <h4 className="font-semibold text-gray-900">{column.title}</h4>
-                  <span className="bg-white text-gray-600 text-xs px-2 py-1 rounded-full">
-                    {tasks[column.id].length}
-                  </span>
-                </div>
+      {!viewRoom ? (
+        <div className="flex-1 flex items-center justify-center text-white/60">
+          <div className="text-center">
+            <div className="text-6xl mb-4">📋</div>
+            <h3 className="text-xl font-semibold mb-2">Select a session to manage tasks</h3>
+            <p>Choose an active session from the dropdown above to start collaborating on tasks.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-4 flex-1 overflow-auto">
+          {board.map((col) => (
+            <div key={col.id} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold">{col.name}</div>
+                <span className="text-xs text-white/70">{col.items.length} task{col.items.length !== 1 ? 's' : ''}</span>
               </div>
-
-              <div className="space-y-3">
-                {tasks[column.id].map(task => (
-                  <TaskCard key={task.id} task={task} columnId={column.id} />
-                ))}
-                
-                {tasks[column.id].length === 0 && (
-                  <div className="text-center py-8 text-gray-500">
-                    <div className="text-3xl mb-2">📝</div>
-                    <p className="text-sm">No tasks yet</p>
+              <div className="space-y-2 flex-1">
+                {col.items.length === 0 && (
+                  <div className="text-white/60 text-sm text-center py-8">
+                    No tasks in {col.name.toLowerCase()}
                   </div>
                 )}
+                {col.items.map((item) => (
+                  <div key={item.id} className="bg-white/10 rounded-xl p-3">
+                    <div className="mb-2">{item.text}</div>
+                    {item.createdBy && (
+                      <div className="text-xs text-white/50 mb-2">
+                        by {item.createdBy}
+                        {item.createdAt && ` • ${new Date(item.createdAt).toLocaleDateString()}`}
+                      </div>
+                    )}
+                    <div className="flex items-center flex-wrap gap-2 text-xs">
+                      {["todo","doing","done"].filter(x => x !== col.id).map(target => (
+                        <button 
+                          key={target} 
+                          className="btn btn-glass py-1" 
+                          onClick={() => moveCard(col.id, target, item)}
+                        >
+                          → {target === "todo" ? "To Do" : target === "doing" ? "In Progress" : "Done"}
+                        </button>
+                      ))}
+                      <button 
+                        className="btn btn-glass py-1 text-red-400" 
+                        onClick={() => removeCard(col.id, item.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
         </div>
-      </div>
+      )}
 
-      {/* Summary */}
-      <div className="border-t p-4">
-        <div className="flex justify-between items-center text-sm text-gray-600">
-          <div>
-            Total Tasks: {Object.values(tasks).flat().length} • 
-            Completed: {tasks.done.length} • 
-            In Progress: {tasks.inProgress.length + tasks.review.length}
-          </div>
-          <div>
-            Last updated: {new Date().toLocaleTimeString()}
+      {!isConnected && viewRoom && (
+        <div className="px-4 pb-2">
+          <div className="text-xs text-yellow-400">
+            Note: Real-time collaboration requires a Socket.IO server. Changes will be stored locally.
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

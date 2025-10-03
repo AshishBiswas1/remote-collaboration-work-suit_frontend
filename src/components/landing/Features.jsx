@@ -74,39 +74,39 @@ export function Features() {
       
       <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-16">
-          <h2 className={`text-4xl md:text-6xl font-black text-gray-900 mb-6 ${isVisible ? 'animate-fade-in' : ''}`}>
+          <h2 className={`text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-black text-gray-900 mb-4 sm:mb-6 px-4 ${isVisible ? 'animate-fade-in' : ''}`}>
             Everything You Need to
             <span className="block bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
               Collaborate Smarter
             </span>
           </h2>
-          <p className={`text-xl text-gray-600 max-w-3xl mx-auto ${isVisible ? 'animate-slide-up' : ''}`}>
+          <p className={`text-base sm:text-lg md:text-xl text-gray-600 max-w-3xl mx-auto px-4 ${isVisible ? 'animate-slide-up' : ''}`}>
             Our comprehensive suite of tools is designed to make remote collaboration 
             as natural and productive as working in the same room.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8">
           {features.map((feature, index) => (
             <div
               key={index}
-              className={`card-modern p-8 cursor-pointer transition-all duration-300 ${
-                activeFeature === index ? 'ring-2 ring-blue-500 shadow-2xl scale-105' : ''
+              className={`card-modern p-6 sm:p-8 cursor-pointer transition-all duration-300 ${
+                activeFeature === index ? 'ring-2 ring-blue-500 shadow-2xl md:scale-105' : ''
               } ${isVisible ? 'animate-slide-up' : ''}`}
               style={{ animationDelay: `${index * 0.1}s` }}
               onClick={() => setActiveFeature(index)}
             >
-              <div className="flex items-start space-x-4">
-                <div className={`w-16 h-16 bg-gradient-to-r ${feature.gradient} rounded-2xl flex items-center justify-center text-2xl shadow-lg`}>
+              <div className="flex flex-col sm:flex-row items-start space-y-4 sm:space-y-0 sm:space-x-4">
+                <div className={`w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-r ${feature.gradient} rounded-2xl flex items-center justify-center text-xl sm:text-2xl shadow-lg flex-shrink-0`}>
                   {feature.icon}
                 </div>
                 <div className="flex-1">
-                  <h3 className="text-xl font-bold text-gray-900 mb-3">{feature.title}</h3>
-                  <p className="text-gray-600 mb-4">{feature.description}</p>
-                  <div className="space-y-2">
+                  <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-2 sm:mb-3">{feature.title}</h3>
+                  <p className="text-sm sm:text-base text-gray-600 mb-3 sm:mb-4">{feature.description}</p>
+                  <div className="space-y-1 sm:space-y-2">
                     {feature.details.map((detail, idx) => (
-                      <div key={idx} className="flex items-center text-sm text-gray-500">
-                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-3"></div>
+                      <div key={idx} className="flex items-center text-xs sm:text-sm text-gray-500">
+                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-2 sm:mr-3 flex-shrink-0"></div>
                         {detail}
                       </div>
                     ))}
