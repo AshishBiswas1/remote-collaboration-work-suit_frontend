@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "../../context/AuthContext";
+import { authAPI } from "../../services/authApi";
+import { setCookie } from "../../utils/cookies";
 
 export function LoginForm({ onClose }) {
   const [formData, setFormData] = useState({
@@ -32,20 +34,48 @@ export function LoginForm({ onClose }) {
     }
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Mock successful login
-      const userData = {
-        id: 1,
-        name: formData.email.split('@')[0],
-        email: formData.email
-      };
-      
-      login(userData, 'mock-jwt-token');
-      onClose();
+      // Call backend login API
+      const response = await authAPI.login({
+        email: formData.email,
+        password: formData.password
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.status === 'success') {
+        // Extract user data and session from response
+        const userData = {
+          id: result.data.user.id,
+          email: result.data.user.email,
+          name: result.data.user.full_name,
+          full_name: result.data.user.full_name,
+          email_verified: result.data.user.email_verified
+        };
+        const token = result.data.session.access_token;
+        const expiresAt = result.data.session.expires_at;
+        
+        // Manually set the JWT cookie (backup in case backend cookie doesn't work)
+        setCookie('jwt', token, {
+          expires: new Date(expiresAt * 1000),
+          secure: window.location.protocol === 'https:',
+          sameSite: 'strict',
+          path: '/'
+        });
+        
+        // Use the auth context login function
+        login(userData, token);
+        onClose();
+      } else {
+        // Handle specific error cases
+        if (result.message.includes('verify your email')) {
+          setError('Please verify your email before logging in. Check your inbox for the verification link.');
+        } else {
+          setError(result.message || 'Invalid email or password');
+        }
+      }
     } catch (err) {
-      setError('Invalid email or password');
+      console.error('Login error:', err);
+      setError('Failed to sign in. Please check your connection and try again.');
     } finally {
       setLoading(false);
     }

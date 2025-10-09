@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useAuth } from "../../context/AuthContext";
+import { authAPI } from "../../services/authApi";
 
-export function SignupForm({ onClose }) {
+export function SignupForm({ onClose, setMode }) {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -10,6 +11,7 @@ export function SignupForm({ onClose }) {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
 
   const { signup } = useAuth();
 
@@ -25,6 +27,7 @@ export function SignupForm({ onClose }) {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccessMessage('');
 
     // Validation
     if (!formData.name || !formData.email || !formData.password || !formData.confirmPassword) {
@@ -46,20 +49,31 @@ export function SignupForm({ onClose }) {
     }
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Mock successful signup
-      const userData = {
-        id: Date.now(),
+      // Call backend signup API
+      const response = await authAPI.signup({
         name: formData.name,
-        email: formData.email
-      };
-      
-      signup(userData, 'mock-jwt-token');
-      onClose();
+        email: formData.email,
+        password: formData.password,
+        passwordConfirm: formData.confirmPassword
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.status === 'success') {
+        // Show success message and redirect to login
+        setSuccessMessage('User created successfully. Please check your email for verification.');
+        
+        // Wait a moment to show the message, then switch to login
+        setTimeout(() => {
+          setMode('login');
+        }, 4000);
+      } else {
+        // Handle error response
+        setError(result.message || 'Failed to create account. Please try again.');
+      }
     } catch (err) {
-      setError('Failed to create account. Please try again.');
+      console.error('Signup error:', err);
+      setError('Failed to create account. Please check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -70,6 +84,12 @@ export function SignupForm({ onClose }) {
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-3 sm:px-4 py-2 sm:py-3 rounded-lg text-sm">
           {error}
+        </div>
+      )}
+      
+      {successMessage && (
+        <div className="bg-green-50 border border-green-200 text-green-700 px-3 sm:px-4 py-2 sm:py-3 rounded-lg text-sm">
+          {successMessage}
         </div>
       )}
       

@@ -5,6 +5,9 @@ import { Whiteboard } from "./Whiteboard";
 import { TeamChat } from "./TeamChat";
 import { TaskBoard } from "./TaskBoard";
 import { useAuth } from "../../context/AuthContext";
+import { sessionAPI } from "../../services/sessionApi";
+import { Navbar } from "../landing/Navbar";
+import { SessionModal } from "./SessionModal";
 
 /** Hash room helpers */
 function parseRoomFromHash() {
@@ -47,6 +50,7 @@ export function Workspace() {
   const [roomId, setRoomId] = useState(parseRoomFromHash() || "");
   const [mySessions, setMySessions] = useState(() => loadJSON(sessionsKey(userId), []));
   const [toast, setToast] = useState("");
+  const [showSessionModal, setShowSessionModal] = useState(false);
   
   // Session deletion state
   const [selectedSessions, setSelectedSessions] = useState(new Set());
@@ -94,35 +98,59 @@ export function Workspace() {
   ];
   const ActiveComponent = tabs.find((t) => t.id === activeTab)?.component;
 
-  const handleBackToLanding = () => {
-    window.location.hash = "";
-    window.location.reload();
-  };
-
-  const handleStartSession = async () => {
-    const newId = `cs-${Math.random().toString(36).slice(2, 6)}${Date.now()
-      .toString(36)
-      .slice(-4)}`;
-    setRoomId(newId);
-    setRoomInHash(newId);
-
-    const newSession = {
-      id: newId,
-      name: `Session ${new Date().toLocaleString()}`,
-      joinedAt: Date.now(),
-    };
-    const next = [newSession, ...loadJSON(sessionsKey(userId), [])];
-    setMySessions(next);
-    saveJSON(sessionsKey(userId), next);
-
-    const link = new URL(window.location.href).toString();
+  const handleStartSession = async (sessionData) => {
     try {
-      await navigator.clipboard.writeText(link);
-      setToast("Session created and link copied to clipboard.");
-    } catch {
-      setToast("Session created. Copy the share link from header.");
+      setToast("Creating session...");
+      
+      // Create session via backend API with the provided data
+      const response = await sessionAPI.createSession(sessionData);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to create session');
+      }
+
+      const result = await response.json();
+      const session = result.data.session;
+      
+      // Use the session token as the room ID
+      const newId = session.session_token;
+      setRoomId(newId);
+      setRoomInHash(newId);
+
+      // Store session locally
+      const newSession = {
+        id: newId,
+        name: session.session_name,
+        joinedAt: Date.now(),
+        backendSessionId: session.id,
+        sessionToken: session.session_token,
+        creatorId: session.creator_id,
+        maxParticipants: session.max_participants,
+        expiresAt: session.expires_at
+      };
+      
+      const next = [newSession, ...loadJSON(sessionsKey(userId), [])];
+      setMySessions(next);
+      saveJSON(sessionsKey(userId), next);
+
+      const link = new URL(window.location.href).toString();
+      try {
+        await navigator.clipboard.writeText(link);
+        setToast("Session created successfully and link copied to clipboard!");
+      } catch {
+        setToast("Session created successfully. Copy the share link from header.");
+      }
+      
+      console.log('Session created:', session);
+      
+    } catch (error) {
+      console.error('Failed to create session:', error);
+      setToast(`Failed to create session: ${error.message}`);
+      throw error; // Re-throw so the modal can handle it
     }
-    setTimeout(() => setToast(""), 2500);
+    
+    setTimeout(() => setToast(""), 3000);
   };
 
   const handleCopyShare = async () => {
@@ -227,30 +255,32 @@ export function Workspace() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b flex-shrink-0">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-14 sm:h-16">
-            <div className="flex items-center space-x-2 sm:space-x-4 min-w-0">
-              <button
-                onClick={handleBackToLanding}
-                className="flex items-center space-x-2 text-blue-600 hover:text-blue-800 flex-shrink-0"
-              >
-                <div className="w-6 h-6 sm:w-8 sm:h-8 gradient-primary rounded-lg flex items-center justify-center">
-                  <span className="text-white font-bold text-xs sm:text-sm">C</span>
-                </div>
-                <span className="font-bold text-sm sm:text-base">CollabSpace</span>
-              </button>
-              <div className="text-gray-300 hidden sm:block">|</div>
-              <h1 className="text-base sm:text-lg font-semibold text-gray-900 hidden sm:block truncate">Workspace</h1>
-            </div>
+      {/* Navbar */}
+      <Navbar />
 
-            <div className="flex items-center space-x-1 sm:space-x-3 flex-shrink-0">
-              <div className="flex items-center space-x-1 sm:space-x-2">
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-24 sm:top-28 left-1/2 -translate-x-1/2 z-50 px-4">
+          <div className="card-modern px-4 py-2 text-sm max-w-sm">{toast}</div>
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="flex-1 flex flex-col min-h-0 pt-16 sm:pt-20">{/* Add padding-top for navbar */}
+        {/* Workspace Header */}
+        <div className="bg-white shadow-sm border-b flex-shrink-0">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex justify-between items-center h-12 sm:h-14">
+              <div className="flex items-center space-x-2 sm:space-x-4 min-w-0">
+                <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate">Workspace</h1>
+                <div className="text-gray-300 hidden sm:block">|</div>
                 <span className="text-xs sm:text-sm text-gray-600 hidden lg:block truncate max-w-40">
                   {roomId ? `Session: ${roomId}` : "No active session"}
                 </span>
-                <button onClick={handleStartSession} className="btn btn-primary py-1.5 sm:py-2 text-xs sm:text-sm px-2 sm:px-3 whitespace-nowrap">
+              </div>
+
+              <div className="flex items-center space-x-1 sm:space-x-3 flex-shrink-0">
+                <button onClick={() => setShowSessionModal(true)} className="btn btn-primary py-1.5 sm:py-2 text-xs sm:text-sm px-2 sm:px-3 whitespace-nowrap">
                   <span className="hidden sm:inline">Start session</span>
                   <span className="sm:hidden">Start</span>
                 </button>
@@ -264,34 +294,9 @@ export function Workspace() {
                   <span className="sm:hidden">Share</span>
                 </button>
               </div>
-
-              <div className="flex items-center space-x-1 sm:space-x-2">
-                <div className="w-6 h-6 sm:w-8 sm:h-8 gradient-accent rounded-full flex items-center justify-center flex-shrink-0">
-                  <span className="text-white text-xs sm:text-sm font-medium">
-                    {user?.name?.[0] || user?.email?.[0] || "U"}
-                  </span>
-                </div>
-                <span className="text-gray-700 hidden xl:block text-sm truncate max-w-32">
-                  {user?.name || user?.email}
-                </span>
-              </div>
-              <button onClick={logout} className="text-gray-500 hover:text-gray-700 text-xs sm:text-sm whitespace-nowrap">
-                Logout
-              </button>
             </div>
           </div>
         </div>
-      </header>
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-16 sm:top-20 left-1/2 -translate-x-1/2 z-50 px-4">
-          <div className="card-modern px-4 py-2 text-sm max-w-sm">{toast}</div>
-        </div>
-      )}
-
-      {/* Content */}
-      <div className="flex-1 flex flex-col min-h-0">
         {/* Tabs (hide on launcher) */}
         {activeTab !== "launcher" && (
           <div className="bg-white border-b flex-shrink-0">
@@ -344,7 +349,7 @@ export function Workspace() {
                       </p>
                     </div>
                     <div className="flex items-center space-x-2 sm:space-x-3 flex-shrink-0">
-                      <button onClick={handleStartSession} className="btn btn-primary text-sm sm:text-base px-3 sm:px-4 py-2 whitespace-nowrap">
+                      <button onClick={() => setShowSessionModal(true)} className="btn btn-primary text-sm sm:text-base px-3 sm:px-4 py-2 whitespace-nowrap">
                         <span className="hidden sm:inline">Start session</span>
                         <span className="sm:hidden">Start</span>
                       </button>
@@ -478,9 +483,19 @@ export function Workspace() {
                                 <div className="text-sm sm:text-base text-gray-900 font-semibold truncate mb-1">
                                   {s.name}
                                 </div>
-                                <div className="text-xs sm:text-sm text-gray-500 break-all font-mono">
+                                <div className="text-xs sm:text-sm text-gray-500 break-all font-mono mb-1">
                                   {s.id}
                                 </div>
+                                {s.backendSessionId && (
+                                  <div className="text-xs text-gray-400">
+                                    Backend ID: {s.backendSessionId}
+                                  </div>
+                                )}
+                                {s.expiresAt && (
+                                  <div className="text-xs text-gray-400">
+                                    Expires: {new Date(s.expiresAt).toLocaleString()}
+                                  </div>
+                                )}
                               </div>
                               {!isSelectMode && (
                                 <div className="flex items-center gap-1 flex-shrink-0">
@@ -556,6 +571,14 @@ export function Workspace() {
           </div>
         </div>
       </div>
+
+      {/* Session Modal */}
+      <SessionModal
+        isOpen={showSessionModal}
+        onClose={() => setShowSessionModal(false)}
+        onCreateSession={handleStartSession}
+        user={user}
+      />
     </div>
   );
 }

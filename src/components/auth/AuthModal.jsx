@@ -32,7 +32,7 @@ export function AuthModal({ isOpen, onClose, mode, setMode }) {
           {mode === 'login' ? (
             <LoginForm onClose={onClose} />
           ) : (
-            <SignupForm onClose={onClose} />
+            <SignupForm onClose={onClose} setMode={setMode} />
           )}
 
           <div className="mt-4 sm:mt-6 text-center">

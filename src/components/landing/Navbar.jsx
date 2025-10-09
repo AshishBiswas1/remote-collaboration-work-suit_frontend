@@ -9,11 +9,23 @@ export function Navbar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
   const [navbarTheme, setNavbarTheme] = useState('dark'); // 'dark' or 'light'
+  const [isWorkspacePage, setIsWorkspacePage] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => {
       const scrollPosition = window.scrollY;
       const windowHeight = window.innerHeight;
+      
+      // Check if we're on workspace page
+      const isOnWorkspace = window.location.hash.startsWith('#workspace');
+      setIsWorkspacePage(isOnWorkspace);
+      
+      // For workspace page, always use light theme
+      if (isOnWorkspace) {
+        setNavbarTheme('light');
+        setIsScrolled(true); // Always show background on workspace
+        return;
+      }
       
       // Check if scrolled past the hero section (assuming hero is full height)
       const isScrolledPastHero = scrollPosition > windowHeight * 0.8;
@@ -30,7 +42,11 @@ export function Navbar() {
 
     handleScroll(); // Set initial state
     window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
+    window.addEventListener('hashchange', handleScroll); // Listen for hash changes
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('hashchange', handleScroll);
+    };
   }, []);
 
   const openAuthModal = (mode) => {
@@ -41,6 +57,12 @@ export function Navbar() {
   const handleWorkspaceClick = (e) => {
     e.preventDefault();
     window.location.hash = '#workspace';
+  };
+
+  const handleLogout = () => {
+    logout();
+    // Clear the hash and navigate to landing page
+    window.location.href = window.location.origin;
   };
 
   // Dynamic classes based on theme
@@ -120,22 +142,26 @@ export function Navbar() {
               <div className={`w-10 h-10 ${getLogoClasses()} rounded-xl flex items-center justify-center shadow-lg`}>
                 <span className="text-white font-bold text-lg">C</span>
               </div>
-              <span className={`text-xl font-bold ${getTextClasses()}`}>CollabSpace</span>
+              <span className={`text-xl font-bold ${getTextClasses()}`}>SynqLab</span>
             </div>
 
             <div className="hidden md:flex items-center space-x-8">
-              <a href="#features" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
-                Features
-              </a>
-              <a href="#pricing" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
-                Pricing
-              </a>
-              <a href="#testimonials" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
-                Reviews
-              </a>
-              <a href="#about" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
-                About
-              </a>
+              {!isWorkspacePage && (
+                <>
+                  <a href="#features" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
+                    Features
+                  </a>
+                  <a href="#pricing" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
+                    Pricing
+                  </a>
+                  <a href="#testimonials" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
+                    Reviews
+                  </a>
+                  <a href="#about" className={`${getTextSecondaryClasses()} ${getHoverClasses()} transition-colors`}>
+                    About
+                  </a>
+                </>
+              )}
               
               {isAuthenticated ? (
                 <div className="flex items-center space-x-4">
@@ -149,11 +175,13 @@ export function Navbar() {
                       {user?.name || user?.email}
                     </span>
                   </div>
-                  <button onClick={handleWorkspaceClick} className={getDashboardButtonClasses()}>
-                    Dashboard
-                  </button>
+                  {!isWorkspacePage && (
+                    <button onClick={handleWorkspaceClick} className={getDashboardButtonClasses()}>
+                      Dashboard
+                    </button>
+                  )}
                   <button 
-                    onClick={logout} 
+                    onClick={handleLogout} 
                     className={`${getTextSecondaryClasses()} ${getHoverClasses()} text-sm transition-colors`}
                   >
                     Logout
@@ -193,20 +221,24 @@ export function Navbar() {
           {isMobileMenuOpen && (
             <div className={`md:hidden mt-4 ${getMobileMenuClasses()}`}>
               <div className="space-y-3">
-                <a href="#features" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
-                  Features
-                </a>
-                <a href="#pricing" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
-                  Pricing
-                </a>
-                <a href="#testimonials" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
-                  Reviews
-                </a>
-                <a href="#about" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
-                  About
-                </a>
+                {!isWorkspacePage && (
+                  <>
+                    <a href="#features" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
+                      Features
+                    </a>
+                    <a href="#pricing" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
+                      Pricing
+                    </a>
+                    <a href="#testimonials" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
+                      Reviews
+                    </a>
+                    <a href="#about" className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}>
+                      About
+                    </a>
+                  </>
+                )}
                 {isAuthenticated ? (
-                  <div className={`border-t ${getBorderClasses()} pt-3 space-y-3`}>
+                  <div className={`${!isWorkspacePage ? 'border-t' : ''} ${getBorderClasses()} ${!isWorkspacePage ? 'pt-3' : ''} space-y-3`}>
                     <div className="flex items-center space-x-2">
                       <div className="w-8 h-8 gradient-accent rounded-full flex items-center justify-center">
                         <span className="text-white text-sm">{user?.name?.[0] || 'U'}</span>
@@ -215,18 +247,20 @@ export function Navbar() {
                         {user?.name || user?.email}
                       </span>
                     </div>
-                    <button onClick={handleWorkspaceClick} className={`w-full ${getDashboardButtonClasses()}`}>
-                      Dashboard
-                    </button>
+                    {!isWorkspacePage && (
+                      <button onClick={handleWorkspaceClick} className={`w-full ${getDashboardButtonClasses()}`}>
+                        Dashboard
+                      </button>
+                    )}
                     <button 
-                      onClick={logout} 
+                      onClick={handleLogout} 
                       className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}
                     >
                       Logout
                     </button>
                   </div>
                 ) : (
-                  <div className={`border-t ${getBorderClasses()} pt-3 space-y-3`}>
+                  <div className={`${!isWorkspacePage ? 'border-t' : ''} ${getBorderClasses()} ${!isWorkspacePage ? 'pt-3' : ''} space-y-3`}>
                     <button 
                       onClick={() => openAuthModal('login')} 
                       className={`block ${getTextSecondaryClasses()} ${getHoverClasses()} py-2 transition-colors`}
