@@ -1,16 +1,116 @@
+// src/components/workspace/TeamChat.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSharedChat } from "../../hooks/useSharedChat";
+import { io } from "socket.io-client";
+
+const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackToLauncher }) {
   const userId = user?.id || "anon";
+  const displayName = user?.name || user?.email || "Anonymous User";
+  
   const [viewRoom, setViewRoom] = useState(roomId);
   const [text, setText] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  
+  const socketRef = useRef(null);
   const endRef = useRef(null);
 
-  // Use shared chat hook
-  const { messages, onlineUsers, isConnected, sendMessage } = useSharedChat(viewRoom, user);
-  
-  const displayName = user?.name || user?.email || "Anonymous User";
+  // Socket.IO Connection
+  useEffect(() => {
+    if (!viewRoom || !user) return;
+
+    console.log('🔌 Connecting to Socket.IO:', SOCKET_URL);
+    
+    // Create socket connection - start with polling to avoid WebSocket frame header errors
+    const socket = io(SOCKET_URL, {
+      transports: ['polling', 'websocket'],  // Try polling first, then upgrade to websocket
+      autoConnect: true,
+      upgrade: true,  // Allow upgrading to websocket after initial connection
+      rememberUpgrade: true,
+      timeout: 10000,
+    });
+
+    socketRef.current = socket;
+
+    // Connection events
+    socket.on('connect', () => {
+      console.log('✅ Socket.IO connected:', socket.id);
+      setIsConnected(true);
+      
+      // Join the room
+      socket.emit('join-room', {
+        roomId: viewRoom,
+        user: {
+          id: userId,
+          name: displayName,
+          email: user.email
+        }
+      });
+    });
+
+    socket.on('disconnect', () => {
+      console.log('❌ Socket.IO disconnected');
+      setIsConnected(false);
+      setOnlineUsers([]);
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('❌ Socket.IO connection error:', error);
+      setIsConnected(false);
+    });
+
+    // Message events
+    socket.on('room-state', (data) => {
+      console.log('📦 Received room state:', data);
+      if (data.messages) {
+        const formattedMessages = data.messages.map(msg => ({
+          id: msg.id || Date.now(),
+          user: msg.user?.name || msg.user || 'Unknown',
+          body: msg.text || msg.body || msg.message || '',
+          ts: msg.timestamp || msg.ts || Date.now()
+        }));
+        setMessages(formattedMessages);
+      }
+      if (data.onlineUsers) {
+        setOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    socket.on('new-message', (messageData) => {
+      console.log('💬 New message received:', messageData);
+      const newMsg = {
+        id: messageData.id || Date.now(),
+        user: messageData.user?.name || messageData.user || 'Unknown',
+        body: messageData.text || messageData.body || messageData.message || '',
+        ts: messageData.timestamp || messageData.ts || Date.now()
+      };
+      setMessages(prev => [...prev, newMsg]);
+    });
+
+    socket.on('user-joined', (data) => {
+      console.log('👋 User joined:', data);
+      if (data.onlineUsers) {
+        setOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    socket.on('user-left', (data) => {
+      console.log('👋 User left:', data);
+      if (data.onlineUsers) {
+        setOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    // Cleanup
+    return () => {
+      if (socket.connected) {
+        socket.emit('leave-room', { roomId: viewRoom });
+      }
+      socket.disconnect();
+    };
+  }, [viewRoom, user, userId, displayName]);
 
   useEffect(() => setViewRoom(roomId), [roomId]);
   useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
@@ -18,8 +118,19 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
   const canSend = useMemo(() => text.trim().length > 0, [text]);
 
   const send = () => {
-    if (!canSend || !viewRoom) return;
-    sendMessage(text);
+    if (!canSend || !viewRoom || !socketRef.current?.connected) return;
+    
+    // Send message via Socket.IO
+    socketRef.current.emit('send-message', {
+      roomId: viewRoom,
+      message: text.trim(),
+      user: {
+        id: userId,
+        name: displayName,
+        email: user?.email
+      }
+    });
+    
     setText("");
   };
 
@@ -32,13 +143,16 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
             <div className="flex items-center space-x-2">
               <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
               <span className="text-xs text-white/70">
-                {isConnected ? 'Connected' : 'Offline'}
+                {isConnected ? 'Connected (socket.io)' : 'Connecting...'}
               </span>
-              {onlineUsers.size > 0 && (
+              {onlineUsers.length > 0 && (
                 <span className="text-xs text-white/70">
-                  • {onlineUsers.size} online
+                  • {onlineUsers.length} online
                 </span>
               )}
+              <span className="text-xs text-white/50">
+                Room: {viewRoom.slice(0, 8)}...
+              </span>
             </div>
           )}
         </div>
@@ -53,22 +167,19 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
       </div>
 
       {/* Online users indicator */}
-      {viewRoom && onlineUsers.size > 0 && (
+      {viewRoom && onlineUsers.length > 0 && (
         <div className="px-4 py-2 bg-blue-900/30 border-b border-white/10">
           <div className="flex items-center space-x-2">
             <span className="text-xs text-white/70">Online:</span>
             <div className="flex space-x-1 flex-wrap">
-              {Array.from(onlineUsers).map((user, index) => {
-                const [, userName] = user.split(':');
-                return (
-                  <span
-                    key={index}
-                    className="px-2 py-1 bg-green-600/20 text-green-300 text-xs rounded-full"
-                  >
-                    {userName}
-                  </span>
-                );
-              })}
+              {onlineUsers.map((user, index) => (
+                <span
+                  key={index}
+                  className="px-2 py-1 bg-green-600/20 text-green-300 text-xs rounded-full"
+                >
+                  {user.name || user}
+                </span>
+              ))}
             </div>
           </div>
         </div>
@@ -85,7 +196,15 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
           </div>
         ) : messages.length === 0 ? (
           <div className="text-white/60 text-sm">
-            No messages yet. {isConnected ? "Start the conversation!" : "Connecting..."}
+            <div className="bg-green-900/30 border border-green-600/30 rounded-lg p-3 mb-4">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span className="font-medium text-green-300">Connected!</span>
+              </div>
+              <p className="text-green-200 text-xs mt-1">
+                You're connected to the chat. Start the conversation!
+              </p>
+            </div>
           </div>
         ) : (
           messages.map((m) => (
@@ -105,15 +224,18 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
         <div className="flex items-center space-x-2">
           <input
             className="input-modern flex-1 bg-white text-gray-900 placeholder-gray-500 border border-gray-300"
-            placeholder={viewRoom ? (isConnected ? "Send a message to everyone in this session" : "Connecting...") : "Select a session first"}
+            placeholder={viewRoom 
+              ? (isConnected ? "Send a message to everyone in this session" : "Connecting to chat...") 
+              : "Select a session first"
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
-            disabled={!viewRoom}
+            disabled={!viewRoom || !isConnected}
           />
           <button 
             onClick={send} 
-            disabled={!canSend || !viewRoom} 
+            disabled={!canSend || !viewRoom || !isConnected} 
             className="btn btn-primary py-2"
           >
             Send
@@ -121,7 +243,7 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
         </div>
         {!isConnected && viewRoom && (
           <div className="text-xs text-yellow-400 mt-2">
-            Note: Real-time messaging requires a Socket.IO server. Messages will be stored locally.
+            Establishing secure connection... Messages will sync once connected.
           </div>
         )}
       </div>

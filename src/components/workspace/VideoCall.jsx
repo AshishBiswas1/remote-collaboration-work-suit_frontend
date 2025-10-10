@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { io as ioClient } from 'socket.io-client';
 import { useSharedChat } from "../../hooks/useSharedChat";
 
 function formatTime(ts = Date.now()) {
@@ -76,10 +77,29 @@ function EjectIcon() {
 export function VideoCall({ roomId, user }) {
   const localVideoRef = useRef(null);
   const screenVideoRef = useRef(null);
+  const localStreamRef = useRef(null); // Store current local stream
+  
+  // Persist camera state in localStorage for this room
+  const getCameraState = (currentRoomId) => {
+    if (!currentRoomId) return true; // Default to true if no room ID
+    const saved = localStorage.getItem(`videoCall_${currentRoomId}_camOn`);
+    return saved !== null ? JSON.parse(saved) : true; // Default to true if not set
+  };
+  
+  const setCameraState = (state) => {
+    if (roomId) {
+      localStorage.setItem(`videoCall_${roomId}_camOn`, JSON.stringify(state));
+    }
+    setCamOn(state);
+  };
+
   const [stream, setStream] = useState(null);
   const [screenStream, setScreenStream] = useState(null);
+  const socketRef = useRef(null);
+  const peersRef = useRef(new Map()); // peerId -> { pc, stream }
+  const [remoteStreams, setRemoteStreams] = useState([]); // [{ peerId, stream }]
   const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
+  const [camOn, setCamOn] = useState(true); // Start with default, will be updated when roomId is available
   const [screenOn, setScreenOn] = useState(false);
   const [handRaised, setHandRaised] = useState(false);
   const [error, setError] = useState("");
@@ -103,6 +123,62 @@ export function VideoCall({ roomId, user }) {
     }
   }, [messages, activePanel]);
 
+  // Load camera state when roomId becomes available
+  useEffect(() => {
+    if (roomId) {
+      // Reset camera state to true for fresh sessions to avoid black screen issues
+      // Only use persisted state if user explicitly toggled during this session
+      const savedCameraState = true; // Always start with camera on
+      console.log('📹 Resetting camera state for room:', roomId, '-> state:', savedCameraState);
+      setCamOn(savedCameraState);
+      
+      // Clear any old persisted state to prevent black screen issues
+      localStorage.removeItem(`videoCall_${roomId}_camOn`);
+    }
+  }, [roomId]);
+
+  // Synchronize camera state with video track - make resilient to missing/ended tracks
+  useEffect(() => {
+    if (!stream || !roomId) return;
+    
+    console.log('🔄 Syncing camera state:', camOn);
+    const videoTrack = stream.getVideoTracks()?.[0];
+    const audioTrack = stream.getAudioTracks()?.[0];
+    
+    // Handle video track
+    if (!videoTrack && camOn) {
+      // No live video track but camera should be on → reacquire
+      console.log('📹 No video track found but camera should be on - reacquiring...');
+      // Don't call ensureVideoOn here to prevent loops - let user manually toggle
+      return;
+    }
+    
+    if (videoTrack) {
+      if (videoTrack.readyState === 'ended' && camOn) {
+        console.log('📹 Video track ended but camera should be on - user needs to toggle camera');
+        // Don't auto-reacquire to prevent loops
+        return;
+      }
+      
+      const currentEnabled = videoTrack.enabled;
+      console.log('📹 Video track current state:', currentEnabled, '-> desired state:', camOn);
+      
+      if (currentEnabled !== camOn) {
+        videoTrack.enabled = camOn;
+        console.log('✅ Video track state updated to:', camOn);
+      }
+    } else {
+      console.log('⚠️ No video track found for state sync');
+    }
+    
+    // Handle audio track
+    if (audioTrack) {
+      audioTrack.enabled = micOn;
+      console.log('🎤 Audio track state updated to:', micOn);
+    }
+    
+  }, [camOn, micOn, stream, roomId]);
+
   // Handle chat message sending
   const handleSendChatMessage = () => {
     if (chatMessage.trim()) {
@@ -123,85 +199,408 @@ export function VideoCall({ roomId, user }) {
     }
   }, [screenStream]);
 
+  // --- Socket.IO + WebRTC signaling logic helpers ---
+  const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+  function updateRemoteStream(peerId, remoteStream) {
+    setRemoteStreams((prev) => {
+      const idx = prev.findIndex((r) => r.peerId === peerId);
+      if (idx === -1) return [...prev, { peerId, stream: remoteStream }];
+      const copy = [...prev];
+      copy[idx] = { peerId, stream: remoteStream };
+      return copy;
+    });
+  }
+
+  function removePeer(peerId) {
+    const wrapper = peersRef.current.get(peerId);
+    if (wrapper) {
+      try { wrapper.pc.close(); } catch {}
+      peersRef.current.delete(peerId);
+    }
+    setRemoteStreams((prev) => prev.filter((r) => r.peerId !== peerId));
+  }
+
+  async function createPeerConnection(peerId, isInitiator) {
+    if (!peerId || peersRef.current.has(peerId)) return;
+    console.log(`🤝 Creating ${isInitiator ? 'initiator' : 'responder'} peer connection for:`, peerId);
+    
+    const pc = new RTCPeerConnection(configuration);
+    const remoteStream = new MediaStream();
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('🧊 Sending ICE candidate to:', peerId);
+        socketRef.current?.emit('ice-candidate', { to: peerId, candidate: event.candidate });
+      }
+    };
+
+    pc.ontrack = (ev) => {
+      console.log('📺 Received remote track from:', peerId, ev.track.kind);
+      try {
+        ev.streams?.[0] && ev.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t));
+      } catch (e) {
+        console.error('ontrack error', e);
+      }
+      updateRemoteStream(peerId, remoteStream);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`🔗 Peer ${peerId} connection state:`, pc.connectionState);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`🧊 Peer ${peerId} ICE connection state:`, pc.iceConnectionState);
+    };
+
+    // Add local tracks if available
+    try {
+      // Get the current local stream from state
+      const currentLocalStream = localStreamRef.current || stream;
+      if (currentLocalStream?.getTracks()?.length > 0) {
+        console.log('📤 Adding local tracks to peer connection for:', peerId);
+        currentLocalStream.getTracks().forEach((track) => pc.addTrack(track, currentLocalStream));
+      } else {
+        console.warn('⚠️ No local stream to add tracks from yet for peer:', peerId);
+        // Try to add tracks later when stream becomes available
+        const checkForStream = () => {
+          const laterStream = localStreamRef.current;
+          if (laterStream?.getTracks()?.length > 0) {
+            console.log('📤 Adding local tracks (delayed) to peer connection for:', peerId);
+            laterStream.getTracks().forEach((track) => pc.addTrack(track, laterStream));
+          }
+        };
+        setTimeout(checkForStream, 100); // Small delay to allow stream to be set
+      }
+    } catch (e) {
+      console.warn('Error adding local stream to peer connection:', e);
+    }
+
+    peersRef.current.set(peerId, { pc, stream: remoteStream });
+
+    if (isInitiator) {
+      try {
+        console.log('📤 Creating and sending offer to:', peerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socketRef.current?.emit('offer', { to: peerId, sdp: pc.localDescription, user });
+      } catch (e) {
+        console.error('Error creating offer', e);
+      }
+    }
+  }
+
+  const connectSocket = () => {
+    if (!roomId || socketRef.current) return;
+    
+    // Check if we have a stream before connecting
+    const currentStream = localStreamRef.current || stream;
+    if (!currentStream) {
+      console.log('📡 No stream available yet, delaying socket connection');
+      return;
+    }
+    
+    console.log('🔄 Attempting to connect to Socket.IO server...');
+    const socket = ioClient('http://localhost:8000', {
+      path: '/socket.io/',
+      transports: ['polling'], // Start with polling only, let Socket.IO handle upgrade
+      forceNew: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 20000,
+      upgrade: true, // Allow upgrade to websocket after connection
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('🔌 Socket connected for video call', socket.id);
+      console.log('📞 Joining call room:', roomId);
+      socket.emit('join-call', { roomId, user });
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('❌ Socket connection error:', error);
+      setError('Failed to connect to video call server: ' + error.message);
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log('🔌 Socket disconnected:', reason);
+      if (reason === 'io server disconnect') {
+        // the disconnection was initiated by the server, reconnect manually
+        socket.connect();
+      }
+    });
+
+    socket.on('reconnect', (attemptNumber) => {
+      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
+    });
+
+    socket.on('reconnect_attempt', (attemptNumber) => {
+      console.log('🔄 Socket reconnection attempt', attemptNumber);
+    });
+
+    socket.on('reconnect_error', (error) => {
+      console.error('❌ Socket reconnection error:', error);
+    });
+
+    socket.on('reconnect_failed', () => {
+      console.error('❌ Socket reconnection failed');
+      setError('Failed to reconnect to video call server');
+    });
+
+    socket.on('existing-peers', async (peers) => {
+      console.log('👥 Existing peers in room:', peers);
+      for (const p of peers) {
+        console.log('🤝 Creating peer connection for existing peer:', p.peerId);
+        await createPeerConnection(p.peerId, true);
+      }
+    });
+
+    socket.on('new-peer', async ({ peerId, user: newUser }) => {
+      console.log('👋 New peer joined:', peerId, newUser);
+      await createPeerConnection(peerId, false);
+    });
+
+    socket.on('offer', async ({ from, sdp }) => {
+      console.log('📨 Received offer from:', from);
+      if (!peersRef.current.has(from)) await createPeerConnection(from, false);
+      const pc = peersRef.current.get(from).pc;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log('📤 Sending answer to:', from);
+        socket.emit('answer', { to: from, sdp: pc.localDescription });
+      } catch (e) {
+        console.error('Error handling offer', e);
+      }
+    });
+
+    socket.on('answer', async ({ from, sdp }) => {
+      console.log('📨 Received answer from:', from);
+      const pcWrap = peersRef.current.get(from);
+      if (!pcWrap) return;
+      try {
+        await pcWrap.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        console.log('✅ Answer applied for peer:', from);
+      } catch (e) {
+        console.error('Error applying answer', e);
+      }
+    });
+
+    socket.on('ice-candidate', async ({ from, candidate }) => {
+      console.log('🧊 Received ICE candidate from:', from);
+      const pcWrap = peersRef.current.get(from);
+      if (!pcWrap || !candidate) return;
+      try {
+        await pcWrap.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('✅ ICE candidate added for peer:', from);
+      } catch (e) {
+        console.error('Error adding remote ICE candidate', e);
+      }
+    });
+
+    socket.on('peer-left', ({ peerId }) => {
+      console.log('👋 Peer left:', peerId);
+      removePeer(peerId);
+    });
+  };
+
+  // Separate media stream initialization from room/socket connection
   useEffect(() => {
     let cancelled = false;
-    async function init() {
+    
+    const initializeMedia = async () => {
+      // Don't initialize media until we have a roomId
+      if (!roomId) {
+        console.log('📹 Waiting for roomId before initializing media');
+        return;
+      }
+      
+      // Only initialize media if we don't have a stream yet
+      if (stream || localStreamRef.current) {
+        console.log('📹 Media stream already exists, skipping initialization');
+        return;
+      }
+      
       setError("");
       try {
-        if (!roomId) return;
+        console.log('🎬 Initializing media stream for room:', roomId);
+        
+        // Always request both audio and video initially
         const media = await navigator.mediaDevices.getUserMedia({
           audio: true,
           video: { width: 1280, height: 720 },
         });
+        
         if (cancelled) {
           media.getTracks().forEach(stopTrack);
           return;
         }
+        
         setStream(media);
+        localStreamRef.current = media;
+        
+        // Set up video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = media;
           await localVideoRef.current.play().catch(() => {});
         }
-        const a = media.getAudioTracks?.()?.[0];
-        const v = media.getVideoTracks?.()?.[0];
-        if (a) a.enabled = micOn;
-        if (v) v.enabled = camOn;
+        
+        console.log('✅ Media stream initialized successfully');
+        
       } catch (e) {
-        setError(e?.message || "Could not access camera/microphone");
+        if (cancelled) return;
+        
+        console.error('❌ Failed to initialize media:', e);
+        let errorMessage = "Could not access camera/microphone";
+        
+        if (e.name === 'NotAllowedError') {
+          errorMessage = "Camera/microphone access denied. Please allow access and refresh.";
+        } else if (e.name === 'NotFoundError') {
+          errorMessage = "No camera/microphone found on this device.";
+        } else if (e.name === 'OverconstrainedError') {
+          errorMessage = "Camera/microphone constraints cannot be satisfied.";
+        }
+        
+        setError(errorMessage);
       }
-    }
-    init();
+    };
+
+    // Initialize media stream when roomId is available
+    initializeMedia();
+
     return () => {
       cancelled = true;
-      setStream((s) => {
-        s?.getTracks()?.forEach(stopTrack);
-        return null;
-      });
-      setScreenStream((s) => {
-        s?.getTracks()?.forEach(stopTrack);
-        return null;
-      });
     };
-  }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [roomId]); // Only depend on roomId, not stream
+
+  // Socket connection when roomId and stream are available
+  useEffect(() => {
+    if (!roomId) {
+      console.log('📡 No roomId available for socket connection');
+      return;
+    }
+    
+    // Use a timer to check for stream availability to avoid dependency issues
+    const connectWhenReady = () => {
+      const currentStream = localStreamRef.current || stream;
+      if (currentStream && !socketRef.current) {
+        console.log('📡 Connecting to socket for room:', roomId);
+        connectSocket();
+      } else if (!currentStream) {
+        // Check again in a bit if stream isn't ready yet
+        setTimeout(connectWhenReady, 100);
+      }
+    };
+    
+    connectWhenReady();
+    
+    // Cleanup socket when roomId changes or component unmounts
+    return () => {
+      if (socketRef.current) {
+        console.log('📡 Cleaning up socket connection');
+        socketRef.current.emit('leave-call', { roomId });
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+    
+  }, [roomId]); // Only depend on roomId
+
+  // Cleanup streams and connections when component unmounts or roomId changes
+  useEffect(() => {
+    return () => {
+      if (!roomId) {
+        // Only cleanup streams when actually leaving (no roomId)
+        console.log('🧹 Cleaning up media streams...');
+        const currentStream = localStreamRef.current || stream;
+        currentStream?.getTracks()?.forEach(stopTrack);
+        setStream(null);
+        localStreamRef.current = null;
+        
+        setScreenStream((s) => {
+          s?.getTracks()?.forEach(stopTrack);
+          return null;
+        });
+      }
+    };
+  }, [roomId]); // Only depend on roomId, not stream
+
+  // Cleanup socket and peers on unmount or leaving room
+  useEffect(() => {
+    return () => {
+      socketRef.current?.emit('leave-call', { roomId });
+      try { socketRef.current?.disconnect(); } catch {}
+      peersRef.current.forEach((w, id) => {
+        try { w.pc.close(); } catch {}
+      });
+      peersRef.current.clear();
+      setRemoteStreams([]);
+      socketRef.current = null;
+    };
+  }, [roomId]);
 
   // Effect to handle camera cleanup on page visibility change, hash change, or unmount
+  // Cleanup when leaving workspace entirely
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        const track = stream?.getVideoTracks?.()?.[0];
-        if (track && track.readyState === "live") {
-          track.stop();
-          setCamOn(false);
-        }
-      }
-    };
-
     const handleHashChange = () => {
-      // If leaving workspace page, stop camera track
+      // Only cleanup when actually leaving the workspace entirely
       if (!location.hash.includes("#workspace")) {
-        const track = stream?.getVideoTracks?.()?.[0];
-        if (track && track.readyState === "live") {
-          track.stop();
-          setCamOn(false);
+        console.log('🚪 Leaving workspace - cleaning up');
+        
+        // Clear localStorage for this room when leaving workspace completely
+        if (roomId) {
+          localStorage.removeItem(`videoCall_${roomId}_camOn`);
         }
+        
+        // Close all peer connections
+        peersRef.current.forEach((peer) => {
+          try { peer.pc.close(); } catch {}
+        });
+        peersRef.current.clear();
+        
+        // Disconnect socket
+        socketRef.current?.emit('leave-call', { roomId });
+        socketRef.current?.disconnect();
       }
     };
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("hashchange", handleHashChange);
 
-    // Cleanup on unmount
+    // Cleanup on component unmount
     return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("hashchange", handleHashChange);
-
-      // Stop camera on component unmount
-      const track = stream?.getVideoTracks?.()?.[0];
-      if (track && track.readyState === "live") {
-        track.stop();
+      
+      console.log('🧹 VideoCall component unmounting');
+      
+      // Clean up peer connections
+      peersRef.current.forEach((peer) => {
+        try { peer.pc.close(); } catch {}
+      });
+      peersRef.current.clear();
+      
+      // Disconnect socket
+      if (socketRef.current) {
+        socketRef.current.emit('leave-call', { roomId });
+        socketRef.current.disconnect();
+      }
+      
+      // Only stop media tracks on actual unmount (leaving video call entirely)
+      const currentStream = localStreamRef.current || stream;
+      if (currentStream) {
+        console.log('🛑 Stopping media tracks on unmount');
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      
+      // Clear camera state for this room
+      if (roomId) {
+        localStorage.removeItem(`videoCall_${roomId}_camOn`);
       }
     };
-  }, [stream]);
+  }, [roomId]); // Only depend on roomId
 
   useEffect(() => {
     const onKey = (e) => {
@@ -222,16 +621,35 @@ export function VideoCall({ roomId, user }) {
       currentAudio.enabled = true;
       return { audio: currentAudio };
     }
+    
+    console.log('🎤 Acquiring new audio track...');
     const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     const newAudio = audioOnly.getAudioTracks()[0];
     const videoTrack = stream?.getVideoTracks?.().find(t => t.readyState === "live") || null;
     const merged = buildStream(newAudio, videoTrack);
-    stream?.getTracks()?.forEach(stopTrack);
+    
+    // Don't stop old stream tracks - just replace them
     setStream(merged);
+    localStreamRef.current = merged;
+    
+    // Update video element
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = merged;
       await localVideoRef.current.play().catch(() => {});
     }
+    
+    // Replace audio track in all peer connections instead of stopping
+    peersRef.current.forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+      if (sender) {
+        console.log('📤 Replacing audio track in peer connection');
+        sender.replaceTrack(newAudio).catch(e => console.error('Failed to replace track:', e));
+      } else {
+        console.log('📤 Adding new audio track to peer connection');
+        pc.addTrack(newAudio, merged);
+      }
+    });
+    
     return { audio: newAudio };
   };
 
@@ -241,16 +659,38 @@ export function VideoCall({ roomId, user }) {
       currentVideo.enabled = true;
       return { video: currentVideo };
     }
-    const videoOnly = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: 1280, height: 720 } });
+    
+    console.log('📹 Acquiring new video track...');
+    const videoOnly = await navigator.mediaDevices.getUserMedia({ 
+      audio: false, 
+      video: { width: 1280, height: 720 } 
+    });
     const newVideo = videoOnly.getVideoTracks()[0];
     const audioTrack = stream?.getAudioTracks?.().find(t => t.readyState === "live") || null;
     const merged = buildStream(audioTrack, newVideo);
-    stream?.getTracks()?.forEach(stopTrack);
+    
+    // Don't stop old stream tracks - just replace them
     setStream(merged);
+    localStreamRef.current = merged;
+    
+    // Update video element
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = merged;
       await localVideoRef.current.play().catch(() => {});
     }
+    
+    // Replace video track in all peer connections instead of stopping
+    peersRef.current.forEach(({ pc }) => {
+      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) {
+        console.log('📤 Replacing video track in peer connection');
+        sender.replaceTrack(newVideo).catch(e => console.error('Failed to replace track:', e));
+      } else {
+        console.log('📤 Adding new video track to peer connection');
+        pc.addTrack(newVideo, merged);
+      }
+    });
+    
     return { video: newVideo };
   };
 
@@ -272,19 +712,28 @@ export function VideoCall({ roomId, user }) {
   };
 
   const toggleCam = async () => {
-    if (!roomId) return;
+    if (!roomId || !stream) {
+      console.log('❌ Cannot toggle camera - no room or stream');
+      return;
+    }
+    
     try {
-      if (camOn) {
-        const track = stream?.getVideoTracks?.()?.[0];
-        if (track) {
-          track.stop(); // Completely stop the camera hardware
-        }
-        setCamOn(false);
-      } else {
-        await ensureVideoOn();
-        setCamOn(true);
+      const videoTrack = stream.getVideoTracks()?.[0];
+      if (!videoTrack) {
+        console.log('❌ No video track available');
+        setError("No video track available");
+        setTimeout(() => setError(""), 2000);
+        return;
       }
+      
+      const newCamState = !camOn;
+      console.log('� Toggling camera:', camOn, '->', newCamState);
+      
+      // Update persistent state (this will trigger the sync useEffect)
+      setCameraState(newCamState);
+      
     } catch (e) {
+      console.error('❌ Failed to toggle camera:', e);
       setError(e?.message || "Failed to toggle camera");
       setTimeout(() => setError(""), 2000);
     }
@@ -586,18 +1035,27 @@ export function VideoCall({ roomId, user }) {
         <div className={`flex-1 min-h-0 p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 transition-all duration-300 ${activePanel ? 'mr-80' : ''}`}>
           {/* Local video */}
           <div className="relative bg-gray-800 rounded-xl overflow-hidden min-h-[300px] lg:min-h-[400px]">
+            {/* Debug info overlay */}
+            <div className="absolute top-2 left-2 bg-black/70 text-white text-xs p-2 rounded z-20">
+              <div>Room: {roomId || 'none'}</div>
+              <div>Stream: {stream ? 'yes' : 'no'}</div>
+              <div>CamOn: {camOn ? 'yes' : 'no'}</div>
+              <div>Tracks: V:{stream?.getVideoTracks()?.length || 0} A:{stream?.getAudioTracks()?.length || 0}</div>
+              <div>VideoEnabled: {stream?.getVideoTracks()?.[0]?.enabled ? 'yes' : 'no'}</div>
+            </div>
+            
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className="w-full h-full object-cover"
+              className={`w-full h-full object-cover transition-opacity duration-300 ${camOn ? 'opacity-100' : 'opacity-0'}`}
             />
             {!camOn && (
-              <div className="absolute inset-0 bg-gray-800 flex items-center justify-center">
+              <div className="absolute inset-0 bg-gray-900 flex items-center justify-center z-10">
                 <div className="text-center">
-                  <div className="w-16 h-16 mx-auto mb-3 bg-blue-500 rounded-full flex items-center justify-center">
-                    <span className="text-xl font-bold text-white">
+                  <div className="w-20 h-20 mx-auto mb-4 bg-blue-500 rounded-full flex items-center justify-center">
+                    <span className="text-2xl font-bold text-white">
                       {displayName?.[0]?.toUpperCase() || "Y"}
                     </span>
                   </div>
@@ -616,12 +1074,31 @@ export function VideoCall({ roomId, user }) {
           </div>
 
           {/* Remote participants area */}
-          <div className="relative bg-gray-800 rounded-xl overflow-hidden min-h-[300px] lg:min-h-[400px] flex items-center justify-center">
-            <div className="text-center text-gray-400">
-              <div className="text-lg mb-2">📹</div>
-              <div className="text-sm">Remote participants will appear here.</div>
-              <div className="text-xs text-gray-500 mt-1">Share the session link to invite others</div>
-            </div>
+          <div className="relative bg-gray-800 rounded-xl overflow-hidden min-h-[300px] lg:min-h-[400px] flex flex-wrap items-start gap-2 p-2">
+            {remoteStreams.length === 0 ? (
+              <div className="w-full text-center text-gray-400 py-8">
+                <div className="text-lg mb-2">🎥</div>
+                <div className="text-sm">Remote participants will appear here.</div>
+                <div className="text-xs text-gray-500 mt-1">Share the session link to invite others</div>
+              </div>
+            ) : (
+              remoteStreams.map(({ peerId, stream }) => (
+                <div key={peerId} className="w-full sm:w-1/2 lg:w-1/3 bg-black rounded overflow-hidden relative">
+                  <video
+                    className="w-full h-48 object-cover bg-black"
+                    autoPlay
+                    playsInline
+                    ref={(el) => {
+                      if (!el) return;
+                      if (el.srcObject !== stream) el.srcObject = stream;
+                    }}
+                  />
+                  <div className="absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-sm">
+                    {peerId}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
           {/* Screen share area (when active) */}

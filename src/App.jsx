@@ -10,7 +10,19 @@ function AppContent() {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
-      if (hash === '#workspace') {
+      const pathname = window.location.pathname;
+      const urlParams = new URLSearchParams(window.location.search);
+      
+      // Check if this is a join-session link - redirect to workspace
+      if (pathname === '/join-session' && urlParams.has('invitation')) {
+        // Redirect to workspace with the invitation parameters preserved
+        window.location.href = `/#workspace${window.location.search}`;
+        return;
+      } else if (urlParams.has('invitation')) {
+        // Handle invitation parameters in any URL
+        window.location.href = `/#workspace${window.location.search}`;
+        return;
+      } else if (hash === '#workspace') {
         setCurrentView('workspace');
       } else {
         setCurrentView('landing');
@@ -19,7 +31,11 @@ function AppContent() {
 
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('popstate', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('popstate', handleHashChange);
+    };
   }, []);
 
   if (loading) {

@@ -15,5 +15,17 @@ export const sessionAPI = {
   joinSession: (sessionId) => fetch(`${API_BASE}/join/${sessionId}`, {
     method: 'POST',
     credentials: 'include'
+  }),
+
+  generateShareLink: (sessionId, options = {}) => fetch(`${API_BASE}/${sessionId}/generate-link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(options)
+  }),
+
+  joinSessionByLink: (sessionId, invitation) => fetch(`${API_BASE}/${sessionId}/join?invitation=${encodeURIComponent(invitation)}`, {
+    method: 'GET',
+    credentials: 'include'
   })
 };

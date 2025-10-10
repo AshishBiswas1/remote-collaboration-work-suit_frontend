@@ -49,7 +49,7 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     if (!roomId) return;
     
     const provider = new WebrtcProvider(`doc-room-${roomId}`, yDoc, {
-      signaling: ['ws://localhost:8000/yjs-ws']
+      signaling: ['http://localhost:8000/yjs-ws']
     });
     const yText = yDoc.getText("quill");
 

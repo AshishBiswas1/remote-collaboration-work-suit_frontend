@@ -39,7 +39,7 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
     }
 
     // Connect to Socket.IO server for task board
-    const socket = io("ws://localhost:3001", {
+    const socket = io("http//localhost:3001", {
       query: {
         roomId: `taskboard-${viewRoom}`,
         userId: userId,

@@ -8,6 +8,8 @@ import { useAuth } from "../../context/AuthContext";
 import { sessionAPI } from "../../services/sessionApi";
 import { Navbar } from "../landing/Navbar";
 import { SessionModal } from "./SessionModal";
+import { ShareLinkModal } from "./ShareLinkModal";
+import { JoinByLinkModal } from "./JoinByLinkModal";
 
 /** Hash room helpers */
 function parseRoomFromHash() {
@@ -51,6 +53,9 @@ export function Workspace() {
   const [mySessions, setMySessions] = useState(() => loadJSON(sessionsKey(userId), []));
   const [toast, setToast] = useState("");
   const [showSessionModal, setShowSessionModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showJoinByLinkModal, setShowJoinByLinkModal] = useState(false);
+  const [invitationUrlFromParams, setInvitationUrlFromParams] = useState('');
   
   // Session deletion state
   const [selectedSessions, setSelectedSessions] = useState(new Set());
@@ -81,6 +86,18 @@ export function Workspace() {
         setActiveTab("launcher");
       }
     };
+    
+    // Check for invitation parameters in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const invitation = urlParams.get('invitation');
+    
+    if (invitation) {
+      // Auto-open the join modal with the current URL
+      const currentUrl = window.location.href;
+      setInvitationUrlFromParams(currentUrl);
+      setShowJoinByLinkModal(true);
+    }
+    
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, [roomId, userId]);
@@ -154,12 +171,32 @@ export function Workspace() {
   };
 
   const handleCopyShare = async () => {
-    if (!shareLink) return;
-    try {
-      await navigator.clipboard.writeText(shareLink);
-      setToast("Share link copied.");
-      setTimeout(() => setToast(""), 1800);
-    } catch {}
+    if (!roomId) return;
+    setShowShareModal(true);
+  };
+
+  // Get current session info for share modal
+  const currentSession = mySessions.find(s => s.id === roomId);
+
+  const handleJoinByLink = (sessionData) => {
+    // Set the new session as active
+    setRoomId(sessionData.id);
+    setRoomInHash(sessionData.id);
+
+    // Add to sessions list if not already present
+    const exists = mySessions.some(s => s.id === sessionData.id);
+    if (!exists) {
+      const next = [sessionData, ...mySessions];
+      setMySessions(next);
+      saveJSON(sessionsKey(userId), next);
+    }
+
+    // Show success message
+    setToast(`Successfully joined session: ${sessionData.name}`);
+    setTimeout(() => setToast(""), 3000);
+
+    // Switch to launcher to show session is active
+    setActiveTab("launcher");
   };
 
   const handleJoinExisting = (id) => {
@@ -280,6 +317,10 @@ export function Workspace() {
               </div>
 
               <div className="flex items-center space-x-1 sm:space-x-3 flex-shrink-0">
+                <button onClick={() => setShowJoinByLinkModal(true)} className="btn btn-secondary py-1.5 sm:py-2 text-xs sm:text-sm px-2 sm:px-3 whitespace-nowrap">
+                  <span className="hidden sm:inline">Join by link</span>
+                  <span className="sm:hidden">Join</span>
+                </button>
                 <button onClick={() => setShowSessionModal(true)} className="btn btn-primary py-1.5 sm:py-2 text-xs sm:text-sm px-2 sm:px-3 whitespace-nowrap">
                   <span className="hidden sm:inline">Start session</span>
                   <span className="sm:hidden">Start</span>
@@ -288,9 +329,9 @@ export function Workspace() {
                   onClick={handleCopyShare}
                   className="btn btn-secondary py-1.5 sm:py-2 text-xs sm:text-sm px-2 sm:px-3 whitespace-nowrap"
                   disabled={!roomId}
-                  title={roomId ? "Copy share link" : "Start a session first"}
+                  title={roomId ? "Generate shareable link" : "Start a session first"}
                 >
-                  <span className="hidden sm:inline">Share link</span>
+                  <span className="hidden sm:inline">Generate share link</span>
                   <span className="sm:hidden">Share</span>
                 </button>
               </div>
@@ -344,11 +385,15 @@ export function Workspace() {
                       <p className="text-sm sm:text-base text-gray-600">
                         {roomId 
                           ? `Session ${roomId} is active. Click any feature below to start collaborating.`
-                          : "Start a session to get a shareable link, or open a past session."
+                          : "Start a new session, join by invitation link, or open a past session."
                         }
                       </p>
                     </div>
                     <div className="flex items-center space-x-2 sm:space-x-3 flex-shrink-0">
+                      <button onClick={() => setShowJoinByLinkModal(true)} className="btn btn-secondary text-sm sm:text-base px-3 sm:px-4 py-2 whitespace-nowrap">
+                        <span className="hidden sm:inline">Join by link</span>
+                        <span className="sm:hidden">Join</span>
+                      </button>
                       <button onClick={() => setShowSessionModal(true)} className="btn btn-primary text-sm sm:text-base px-3 sm:px-4 py-2 whitespace-nowrap">
                         <span className="hidden sm:inline">Start session</span>
                         <span className="sm:hidden">Start</span>
@@ -357,9 +402,9 @@ export function Workspace() {
                         onClick={handleCopyShare}
                         className="btn btn-secondary text-sm sm:text-base px-3 sm:px-4 py-2 whitespace-nowrap"
                         disabled={!roomId}
-                        title={roomId ? "Copy share link" : "Start a session first"}
+                        title={roomId ? "Generate shareable link" : "Start a session first"}
                       >
-                        <span className="hidden sm:inline">Share link</span>
+                        <span className="hidden sm:inline">Generate share link</span>
                         <span className="sm:hidden">Share</span>
                       </button>
                     </div>
@@ -578,6 +623,29 @@ export function Workspace() {
         onClose={() => setShowSessionModal(false)}
         onCreateSession={handleStartSession}
         user={user}
+      />
+
+      {/* Share Link Modal */}
+      <ShareLinkModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        sessionId={currentSession?.backendSessionId}
+        sessionName={currentSession?.name || "Current Session"}
+      />
+
+      {/* Join by Link Modal */}
+      <JoinByLinkModal
+        isOpen={showJoinByLinkModal}
+        onClose={() => {
+          setShowJoinByLinkModal(false);
+          setInvitationUrlFromParams('');
+          // Clear URL parameters when closing modal
+          if (invitationUrlFromParams) {
+            window.history.replaceState({}, '', '/#workspace');
+          }
+        }}
+        onJoinSuccess={handleJoinByLink}
+        initialUrl={invitationUrlFromParams}
       />
     </div>
   );
