@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { io as ioClient } from 'socket.io-client';
 import { useSharedChat } from "../../hooks/useSharedChat";
 
+const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
 function formatTime(ts = Date.now()) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -85,31 +87,36 @@ export function VideoCall({ roomId, user }) {
     const saved = localStorage.getItem(`videoCall_${currentRoomId}_camOn`);
     return saved !== null ? JSON.parse(saved) : true; // Default to true if not set
   };
-  
-  const setCameraState = (state) => {
-    if (roomId) {
-      localStorage.setItem(`videoCall_${roomId}_camOn`, JSON.stringify(state));
-    }
-    setCamOn(state);
-  };
 
   const [stream, setStream] = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const socketRef = useRef(null);
-  const peersRef = useRef(new Map()); // peerId -> { pc, stream }
-  const [remoteStreams, setRemoteStreams] = useState([]); // [{ peerId, stream }]
+  const chatSocketRef = useRef(null); // Separate socket for chat
+  const peersRef = useRef(new Map()); // peerId -> { pc, stream, user }
+  const [remoteStreams, setRemoteStreams] = useState([]); // [{ peerId, stream, user }]
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true); // Start with default, will be updated when roomId is available
   const [screenOn, setScreenOn] = useState(false);
+  const [screenSharingPeers, setScreenSharingPeers] = useState(new Set());
   const [handRaised, setHandRaised] = useState(false);
   const [error, setError] = useState("");
   const [activePanel, setActivePanel] = useState(null); // For side panels: 'people', 'chat', 'activities', 'more'
   const [chatMessage, setChatMessage] = useState("");
 
-  // Shared chat functionality
-  const { messages, onlineUsers, isConnected, sendMessage } = useSharedChat(roomId, user);
+  // Chat state - using Socket.IO for real-time sync
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatOnlineUsers, setChatOnlineUsers] = useState([]);
+  const [chatConnected, setChatConnected] = useState(false);
+  
+  // Fallback: Shared chat functionality (WebRTC-based)
+  const { messages: fallbackMessages, onlineUsers: fallbackOnlineUsers, isConnected: fallbackConnected, sendMessage: fallbackSendMessage } = useSharedChat(roomId, user);
   
   const chatEndRef = useRef(null);
+  
+  // Use Socket.IO chat if connected, otherwise fallback to WebRTC
+  const messages = chatConnected ? chatMessages : fallbackMessages;
+  const onlineUsers = chatConnected ? new Set(chatOnlineUsers.map(u => `${u.id}:${u.name}`)) : fallbackOnlineUsers;
+  const isConnected = chatConnected || fallbackConnected;
 
   const displayName = useMemo(
     () => user?.name || user?.email || "You",
@@ -137,52 +144,164 @@ export function VideoCall({ roomId, user }) {
     }
   }, [roomId]);
 
-  // Synchronize camera state with video track - make resilient to missing/ended tracks
+  // Synchronize mic only (camera uses enabled toggle)
   useEffect(() => {
     if (!stream || !roomId) return;
     
-    console.log('🔄 Syncing camera state:', camOn);
-    const videoTrack = stream.getVideoTracks()?.[0];
+    console.log('🔄 Syncing mic state:', micOn);
     const audioTrack = stream.getAudioTracks()?.[0];
-    
-    // Handle video track
-    if (!videoTrack && camOn) {
-      // No live video track but camera should be on → reacquire
-      console.log('📹 No video track found but camera should be on - reacquiring...');
-      // Don't call ensureVideoOn here to prevent loops - let user manually toggle
-      return;
-    }
-    
-    if (videoTrack) {
-      if (videoTrack.readyState === 'ended' && camOn) {
-        console.log('📹 Video track ended but camera should be on - user needs to toggle camera');
-        // Don't auto-reacquire to prevent loops
-        return;
-      }
-      
-      const currentEnabled = videoTrack.enabled;
-      console.log('📹 Video track current state:', currentEnabled, '-> desired state:', camOn);
-      
-      if (currentEnabled !== camOn) {
-        videoTrack.enabled = camOn;
-        console.log('✅ Video track state updated to:', camOn);
-      }
-    } else {
-      console.log('⚠️ No video track found for state sync');
-    }
-    
-    // Handle audio track
     if (audioTrack) {
       audioTrack.enabled = micOn;
       console.log('🎤 Audio track state updated to:', micOn);
     }
     
-  }, [camOn, micOn, stream, roomId]);
+  }, [micOn, stream, roomId]);
+
+  // Ensure local video element displays the current stream
+  useEffect(() => {
+    if (!localVideoRef.current || !stream) return;
+    
+    // Only update if srcObject is different to avoid unnecessary updates
+    if (localVideoRef.current.srcObject !== stream) {
+      console.log('🎥 Updating local video srcObject');
+      localVideoRef.current.srcObject = stream;
+      
+      // Ensure video plays (especially important after toggling camera)
+      localVideoRef.current.play().catch(err => {
+        console.error('Failed to play local video:', err);
+      });
+    }
+  }, [stream]);
+
+  // Socket.IO Chat Connection - separate from WebRTC socket
+  useEffect(() => {
+    if (!roomId || !user) {
+      // Cleanup chat socket if no room
+      if (chatSocketRef.current) {
+        chatSocketRef.current.disconnect();
+        chatSocketRef.current = null;
+      }
+      setChatConnected(false);
+      setChatMessages([]);
+      setChatOnlineUsers([]);
+      return;
+    }
+
+    console.log('💬 Connecting to Chat Socket.IO:', SOCKET_URL);
+    
+    // Create separate socket for chat
+    const chatSocket = ioClient(SOCKET_URL, {
+      transports: ['polling', 'websocket'],
+      autoConnect: true,
+      upgrade: true,
+      rememberUpgrade: true,
+      timeout: 10000,
+      path: '/socket.io/',
+    });
+
+    chatSocketRef.current = chatSocket;
+
+    // Connection events
+    chatSocket.on('connect', () => {
+      console.log('✅ Chat Socket.IO connected:', chatSocket.id);
+      setChatConnected(true);
+      
+      // Join the chat room
+      chatSocket.emit('join-room', {
+        roomId: roomId,
+        user: {
+          id: user?.id || 'anon',
+          name: user?.name || user?.email || 'Anonymous',
+          email: user?.email
+        }
+      });
+    });
+
+    chatSocket.on('disconnect', () => {
+      console.log('❌ Chat Socket.IO disconnected');
+      setChatConnected(false);
+      setChatOnlineUsers([]);
+    });
+
+    chatSocket.on('connect_error', (error) => {
+      console.error('❌ Chat Socket.IO connection error:', error);
+      setChatConnected(false);
+    });
+
+    // Message events
+    chatSocket.on('room-state', (data) => {
+      console.log('📦 Received chat room state:', data);
+      if (data.messages) {
+        const formattedMessages = data.messages.map(msg => ({
+          id: msg.id || Date.now(),
+          user: msg.user?.name || msg.user || 'Unknown',
+          body: msg.text || msg.body || msg.message || '',
+          ts: msg.timestamp || msg.ts || Date.now()
+        }));
+        setChatMessages(formattedMessages);
+      }
+      if (data.onlineUsers) {
+        setChatOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    chatSocket.on('new-message', (messageData) => {
+      console.log('💬 New chat message received:', messageData);
+      const newMsg = {
+        id: messageData.id || Date.now(),
+        user: messageData.user?.name || messageData.user || 'Unknown',
+        body: messageData.text || messageData.body || messageData.message || '',
+        ts: messageData.timestamp || messageData.ts || Date.now()
+      };
+      setChatMessages(prev => [...prev, newMsg]);
+    });
+
+    chatSocket.on('user-joined', (data) => {
+      console.log('👋 User joined chat:', data);
+      if (data.onlineUsers) {
+        setChatOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    chatSocket.on('user-left', (data) => {
+      console.log('👋 User left chat:', data);
+      if (data.onlineUsers) {
+        setChatOnlineUsers(data.onlineUsers);
+      }
+    });
+
+    // Cleanup
+    return () => {
+      if (chatSocket.connected) {
+        chatSocket.emit('leave-room', { roomId: roomId });
+      }
+      chatSocket.disconnect();
+      chatSocketRef.current = null;
+      setChatConnected(false);
+      setChatMessages([]);
+      setChatOnlineUsers([]);
+    };
+  }, [roomId, user]);
 
   // Handle chat message sending
   const handleSendChatMessage = () => {
-    if (chatMessage.trim()) {
-      sendMessage(chatMessage);
+    if (!chatMessage.trim() || !roomId) return;
+    
+    // Try Socket.IO first
+    if (chatConnected && chatSocketRef.current?.connected) {
+      chatSocketRef.current.emit('send-message', {
+        roomId: roomId,
+        message: chatMessage.trim(),
+        user: {
+          id: user?.id || 'anon',
+          name: user?.name || user?.email || 'Anonymous',
+          email: user?.email
+        }
+      });
+      setChatMessage("");
+    } else {
+      // Fallback to WebRTC-based chat
+      fallbackSendMessage(chatMessage.trim());
       setChatMessage("");
     }
   };
@@ -202,12 +321,18 @@ export function VideoCall({ roomId, user }) {
   // --- Socket.IO + WebRTC signaling logic helpers ---
   const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-  function updateRemoteStream(peerId, remoteStream) {
+  function updateRemoteStream(peerId, remoteStream, userData = null) {
     setRemoteStreams((prev) => {
       const idx = prev.findIndex((r) => r.peerId === peerId);
-      if (idx === -1) return [...prev, { peerId, stream: remoteStream }];
+      if (idx === -1) {
+        return [...prev, { peerId, stream: remoteStream, user: userData }];
+      }
       const copy = [...prev];
-      copy[idx] = { peerId, stream: remoteStream };
+      copy[idx] = { 
+        ...copy[idx],
+        stream: remoteStream,
+        user: userData || copy[idx].user // Preserve existing user data if not provided
+      };
       return copy;
     });
   }
@@ -219,11 +344,16 @@ export function VideoCall({ roomId, user }) {
       peersRef.current.delete(peerId);
     }
     setRemoteStreams((prev) => prev.filter((r) => r.peerId !== peerId));
+    setScreenSharingPeers(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(peerId);
+      return newSet;
+    });
   }
 
-  async function createPeerConnection(peerId, isInitiator) {
+  async function createPeerConnection(peerId, isInitiator, userData = null) {
     if (!peerId || peersRef.current.has(peerId)) return;
-    console.log(`🤝 Creating ${isInitiator ? 'initiator' : 'responder'} peer connection for:`, peerId);
+    console.log(`🤝 Creating ${isInitiator ? 'initiator' : 'responder'} peer connection for:`, peerId, 'user:', userData);
     
     const pc = new RTCPeerConnection(configuration);
     const remoteStream = new MediaStream();
@@ -236,13 +366,19 @@ export function VideoCall({ roomId, user }) {
     };
 
     pc.ontrack = (ev) => {
-      console.log('📺 Received remote track from:', peerId, ev.track.kind);
+      console.log('📺 Received remote track from:', peerId, 'kind:', ev.track.kind, 'label:', ev.track.label);
       try {
-        ev.streams?.[0] && ev.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t));
+        // Add the track directly to the remote stream
+        if (!remoteStream.getTracks().find(t => t.id === ev.track.id)) {
+          remoteStream.addTrack(ev.track);
+          console.log('✅ Added track to remote stream:', ev.track.kind, ev.track.label);
+        }
+        
+        // Update the remote stream for this peer
+        updateRemoteStream(peerId, remoteStream, userData);
       } catch (e) {
         console.error('ontrack error', e);
       }
-      updateRemoteStream(peerId, remoteStream);
     };
 
     pc.onconnectionstatechange = () => {
@@ -253,12 +389,12 @@ export function VideoCall({ roomId, user }) {
       console.log(`🧊 Peer ${peerId} ICE connection state:`, pc.iceConnectionState);
     };
 
-    // Add local tracks if available
+    // Add local tracks if available (camera/mic)
     try {
       // Get the current local stream from state
       const currentLocalStream = localStreamRef.current || stream;
       if (currentLocalStream?.getTracks()?.length > 0) {
-        console.log('📤 Adding local tracks to peer connection for:', peerId);
+        console.log('📤 Adding local camera/mic tracks to peer connection for:', peerId);
         currentLocalStream.getTracks().forEach((track) => pc.addTrack(track, currentLocalStream));
       } else {
         console.warn('⚠️ No local stream to add tracks from yet for peer:', peerId);
@@ -272,18 +408,35 @@ export function VideoCall({ roomId, user }) {
         };
         setTimeout(checkForStream, 100); // Small delay to allow stream to be set
       }
+      
+      // Add screen share track if currently sharing
+      if (screenStream?.getTracks()?.length > 0) {
+        console.log('📤 Adding screen share track to peer connection for:', peerId);
+        screenStream.getTracks().forEach((track) => pc.addTrack(track, screenStream));
+      }
     } catch (e) {
       console.warn('Error adding local stream to peer connection:', e);
     }
 
-    peersRef.current.set(peerId, { pc, stream: remoteStream });
+    peersRef.current.set(peerId, { pc, stream: remoteStream, user: userData });
 
     if (isInitiator) {
       try {
         console.log('📤 Creating and sending offer to:', peerId);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socketRef.current?.emit('offer', { to: peerId, sdp: pc.localDescription, user });
+        const offerData = { 
+          to: peerId, 
+          sdp: pc.localDescription, 
+          user 
+        };
+        // Embed screen sharing state if active
+        if (screenOn) {
+          offerData.screenSharing = true;
+          console.log('🖥️ Embedding screenSharing=true in initial offer to:', peerId);
+        }
+        socketRef.current?.emit('offer', offerData);
+        console.log('✅ Offer sent', screenOn ? 'with screen flag' : 'without screen flag');
       } catch (e) {
         console.error('Error creating offer', e);
       }
@@ -353,26 +506,48 @@ export function VideoCall({ roomId, user }) {
     socket.on('existing-peers', async (peers) => {
       console.log('👥 Existing peers in room:', peers);
       for (const p of peers) {
-        console.log('🤝 Creating peer connection for existing peer:', p.peerId);
-        await createPeerConnection(p.peerId, true);
+        console.log('🤝 Creating peer connection for existing peer:', p.peerId, 'user:', p.user);
+        await createPeerConnection(p.peerId, true, p.user);
       }
     });
 
     socket.on('new-peer', async ({ peerId, user: newUser }) => {
       console.log('👋 New peer joined:', peerId, newUser);
-      await createPeerConnection(peerId, false);
+      await createPeerConnection(peerId, false, newUser);
     });
 
-    socket.on('offer', async ({ from, sdp }) => {
-      console.log('📨 Received offer from:', from);
-      if (!peersRef.current.has(from)) await createPeerConnection(from, false);
+    socket.on('offer', async ({ from, sdp, user: offerUser, screenSharing }) => {
+      console.log('📨 Received offer from:', from, 'user:', offerUser, 'screenSharing:', screenSharing);
+      console.log('   SDP type:', sdp?.type, 'has video:', sdp?.sdp?.includes('m=video'));
+      if (!peersRef.current.has(from)) {
+        console.log('   Creating new peer connection for:', from);
+        await createPeerConnection(from, false, offerUser);
+      }
       const pc = peersRef.current.get(from).pc;
       try {
+        console.log('   Setting remote description...');
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        
+        // Handle embedded screen sharing flag after remote desc (tracks may start flowing)
+        if (screenSharing !== undefined) {
+          console.log(`🖥️ Updating screen share state for ${from}: ${screenSharing ? 'start' : 'stop'}`);
+          if (screenSharing) {
+            setScreenSharingPeers(prev => new Set([...prev, from]));
+          } else {
+            setScreenSharingPeers(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(from);
+              return newSet;
+            });
+          }
+        }
+        
+        console.log('   Creating answer...');
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         console.log('📤 Sending answer to:', from);
         socket.emit('answer', { to: from, sdp: pc.localDescription });
+        console.log('✅ Answer sent successfully');
       } catch (e) {
         console.error('Error handling offer', e);
       }
@@ -599,6 +774,9 @@ export function VideoCall({ roomId, user }) {
       if (roomId) {
         localStorage.removeItem(`videoCall_${roomId}_camOn`);
       }
+      
+      // Reset screen sharing peers state
+      setScreenSharingPeers(new Set());
     };
   }, [roomId]); // Only depend on roomId
 
@@ -654,9 +832,10 @@ export function VideoCall({ roomId, user }) {
   };
 
   const ensureVideoOn = async () => {
-    const currentVideo = stream?.getVideoTracks?.().find(t => t.readyState === "live");
-    if (currentVideo) {
+    let currentVideo = stream?.getVideoTracks?.().find(t => t.readyState === "live");
+    if (currentVideo && !currentVideo.enabled) {
       currentVideo.enabled = true;
+      console.log('✅ Existing video track enabled');
       return { video: currentVideo };
     }
     
@@ -666,27 +845,28 @@ export function VideoCall({ roomId, user }) {
       video: { width: 1280, height: 720 } 
     });
     const newVideo = videoOnly.getVideoTracks()[0];
+    
+    // Merge with existing audio if present
     const audioTrack = stream?.getAudioTracks?.().find(t => t.readyState === "live") || null;
     const merged = buildStream(audioTrack, newVideo);
     
-    // Don't stop old stream tracks - just replace them
     setStream(merged);
     localStreamRef.current = merged;
     
-    // Update video element
+    // Update local video element
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = merged;
-      await localVideoRef.current.play().catch(() => {});
+      localVideoRef.current.play().catch(err => {
+        console.error('Failed to play video after enable:', err);
+      });
     }
     
-    // Replace video track in all peer connections instead of stopping
+    // Add/replace in peers (only if needed)
     peersRef.current.forEach(({ pc }) => {
       const sender = pc.getSenders().find(s => s.track?.kind === 'video');
       if (sender) {
-        console.log('📤 Replacing video track in peer connection');
-        sender.replaceTrack(newVideo).catch(e => console.error('Failed to replace track:', e));
+        sender.replaceTrack(newVideo).catch(e => console.error('Failed to replace video track:', e));
       } else {
-        console.log('📤 Adding new video track to peer connection');
         pc.addTrack(newVideo, merged);
       }
     });
@@ -712,25 +892,116 @@ export function VideoCall({ roomId, user }) {
   };
 
   const toggleCam = async () => {
-    if (!roomId || !stream) {
-      console.log('❌ Cannot toggle camera - no room or stream');
+    if (!roomId) {
+      console.log('❌ Cannot toggle camera - no room');
       return;
     }
     
     try {
-      const videoTrack = stream.getVideoTracks()?.[0];
-      if (!videoTrack) {
-        console.log('❌ No video track available');
-        setError("No video track available");
-        setTimeout(() => setError(""), 2000);
-        return;
+      const newCamState = !camOn;
+      console.log('🎥 Toggling camera:', camOn, '->', newCamState);
+      
+      const videoTrack = stream?.getVideoTracks()?.[0];
+      
+      if (newCamState) {
+        // Turning camera ON - acquire fresh video track (like Google Meet)
+        console.log('📹 Starting camera hardware...');
+        
+        // Stop old track if exists (cleanup)
+        if (videoTrack) {
+          videoTrack.stop();
+        }
+        
+        // Get new video track
+        const videoOnly = await navigator.mediaDevices.getUserMedia({ 
+          audio: false, 
+          video: { width: 1280, height: 720 } 
+        });
+        const newVideo = videoOnly.getVideoTracks()[0];
+        newVideo.enabled = true; // Ensure enabled
+        
+        // Keep existing audio track
+        const audioTrack = stream?.getAudioTracks?.().find(t => t.readyState === "live") || null;
+        const merged = buildStream(audioTrack, newVideo);
+        
+        // Update stream state
+        setStream(merged);
+        localStreamRef.current = merged;
+        
+        // Update local video element
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = merged;
+          await localVideoRef.current.play().catch(err => {
+            console.error('Failed to play video:', err);
+          });
+        }
+        
+        // Replace video track in all peer connections
+        peersRef.current.forEach(({ pc }) => {
+          const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+          if (sender) {
+            console.log('📤 Replacing video track in peer connection');
+            sender.replaceTrack(newVideo).catch(e => console.error('Failed to replace track:', e));
+          } else {
+            console.log('� Adding video track to peer connection');
+            pc.addTrack(newVideo, merged);
+          }
+        });
+        
+        console.log('✅ Camera hardware started and sent to peers');
+        
+      } else {
+        // Turning camera OFF - stop hardware and send disabled black track
+        if (videoTrack) {
+          console.log('🛑 Stopping camera hardware...');
+          
+          // Create a black canvas track to replace the camera
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = 'black';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          // Create a MediaStream from the black canvas
+          const blackStream = canvas.captureStream(1); // 1 FPS is enough
+          const blackTrack = blackStream.getVideoTracks()[0];
+          blackTrack.enabled = false; // Disable it so remote shows avatar
+          
+          // Stop the actual camera hardware
+          videoTrack.stop();
+          
+          // Keep existing audio track
+          const audioTrack = stream?.getAudioTracks()?.[0];
+          const newStream = buildStream(audioTrack, blackTrack);
+          
+          // Update stream state
+          setStream(newStream);
+          localStreamRef.current = newStream;
+          
+          // Update local video element
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = newStream;
+          }
+          
+          // Replace video track in peer connections with black track
+          peersRef.current.forEach(({ pc }) => {
+            const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) {
+              console.log('📤 Replacing with disabled black track in peer connection');
+              sender.replaceTrack(blackTrack).catch(e => console.error('Failed to replace track:', e));
+            }
+          });
+          
+          console.log('✅ Camera hardware stopped, sending disabled track to peers');
+        }
       }
       
-      const newCamState = !camOn;
-      console.log('� Toggling camera:', camOn, '->', newCamState);
-      
-      // Update persistent state (this will trigger the sync useEffect)
-      setCameraState(newCamState);
+      setCamOn(newCamState);
+      // Update localStorage persistence
+      if (roomId) {
+        localStorage.setItem(`videoCall_${roomId}_camOn`, JSON.stringify(newCamState));
+      }
       
     } catch (e) {
       console.error('❌ Failed to toggle camera:', e);
@@ -739,9 +1010,65 @@ export function VideoCall({ roomId, user }) {
     }
   };
 
+  // Shared stop logic (updated for embedded flag)
+  const handleScreenStop = async (currentScreenStream, currentScreenTrack) => {
+    // Re-enable camera if it was on
+    if (camOn) {
+      const cameraTrack = stream?.getVideoTracks()?.[0];
+      if (cameraTrack) {
+        cameraTrack.enabled = true;
+        console.log('📹 Re-enabled camera track after screen share stop');
+      }
+    }
+
+    // Remove screen track from all peer connections
+    if (currentScreenTrack) {
+      for (const [peerId, { pc }] of peersRef.current.entries()) {
+        const sender = pc.getSenders().find(s => s.track?.id === currentScreenTrack.id);
+        if (sender) {
+          console.log('📤 Removing screen share track from peer connection:', peerId);
+          pc.removeTrack(sender);
+          
+          // Trigger renegotiation with embedded stop flag
+          try {
+            console.log('🔄 Creating offer to remove screen...');
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socketRef.current?.emit('offer', { 
+              to: peerId, 
+              sdp: pc.localDescription, 
+              user,
+              screenSharing: false  // Embed stop flag
+            });
+            console.log('📤 Sent renegotiation offer with screenSharing=false to:', peerId);
+          } catch (e) {
+            console.error('Failed to renegotiate for screen share removal:', e);
+          }
+        }
+      }
+    }
+
+    // Clean up local screen stream
+    setScreenOn(false);
+    setScreenStream((s) => {
+      s?.getTracks()?.forEach(stopTrack);
+      return null;
+    });
+    
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+    
+    console.log('✅ Screen share stopped and signaled via offers');
+  };
+
   const toggleScreen = async () => {
     try {
       if (!screenOn) {
+        console.log('📺 Starting screen share...');
+        console.log('📺 Current peers count:', peersRef.current.size);
+
+        // Get screen capture stream
         const scr = await navigator.mediaDevices.getDisplayMedia({ 
           video: { 
             mediaSource: 'screen',
@@ -752,51 +1079,112 @@ export function VideoCall({ roomId, user }) {
           audio: false 
         });
         
-        setScreenStream(scr);
+        console.log('✅ Screen stream acquired:', scr.getTracks().map(t => ({
+          kind: t.kind,
+          label: t.label,
+          enabled: t.enabled,
+          readyState: t.readyState
+        })));
         
-        // Ensure video element is ready and set stream
+        setScreenStream(scr);
+        const screenTrack = scr.getVideoTracks()[0];
+
+        // Disable camera track during screen share (if camera is on)
+        if (camOn) {
+          const cameraTrack = stream?.getVideoTracks()?.[0];
+          if (cameraTrack) {
+            cameraTrack.enabled = false;
+            console.log('📹 Temporarily disabled camera track during screen share');
+          }
+        }
+
+        // Set up local screen video element
         if (screenVideoRef.current) {
           screenVideoRef.current.srcObject = scr;
-          
-          // Add event listeners for better debugging
+          console.log('📺 Set local screen video srcObject');
           screenVideoRef.current.onloadedmetadata = () => {
-            console.log('Screen share metadata loaded');
+            console.log('✅ Screen share metadata loaded');
             screenVideoRef.current.play().catch(err => {
               console.error('Failed to play screen share:', err);
             });
           };
-          
           screenVideoRef.current.onerror = (err) => {
             console.error('Screen share video error:', err);
           };
         }
-        
-        const [track] = scr.getVideoTracks();
-        track.onended = () => {
-          console.log('Screen share ended by user');
-          setScreenOn(false);
-          setScreenStream((s) => {
-            s?.getTracks()?.forEach(stopTrack);
-            return null;
-          });
-          if (screenVideoRef.current) {
-            screenVideoRef.current.srcObject = null;
+
+        // Add screen track to all peers and renegotiate
+        for (const [peerId, { pc }] of peersRef.current.entries()) {
+          console.log(`📤 Processing peer ${peerId} for screen share`);
+          console.log(`   Connection state:`, pc.connectionState);
+          console.log(`   Current senders:`, pc.getSenders().length);
+          
+          // Check if we already have a screen track sender
+          const screenSender = pc.getSenders().find(s => s.track?.id === screenTrack.id);
+          if (!screenSender) {
+            console.log('📤 Adding screen share track to peer connection for:', peerId);
+            pc.addTrack(screenTrack, scr);
+            console.log('✅ Screen track added, new senders count:', pc.getSenders().length);
+            
+            // Trigger renegotiation
+            try {
+              console.log('🔄 Creating offer for renegotiation...');
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              console.log('📤 Sending offer to peer:', peerId);
+              socketRef.current?.emit('offer', { 
+                to: peerId, 
+                sdp: pc.localDescription, 
+                user,
+                screenSharing: true  // Embed start flag
+              });
+              console.log('✅ Sent renegotiation offer with screenSharing=true to:', peerId);
+            } catch (e) {
+              console.error('Failed to renegotiate for screen share:', e);
+            }
+          } else {
+            console.log('⚠️ Screen sender already exists for peer:', peerId);
           }
+        }
+
+        // Send screen start signal to all peers after setup
+        peersRef.current.forEach((_, peerId) => {
+          console.log('� Sending screen-share-start to peer:', peerId);
+          socketRef.current?.emit('screen-share-start', { to: peerId, from: socketRef.current.id });
+        });
+        
+        console.log('✅ Screen share setup complete for all peers');
+        
+        // Handle when user stops sharing via browser UI
+        screenTrack.onended = async () => {
+          console.log('📺 Screen share ended by user');
+          await handleScreenStop(scr, screenTrack); // Call shared stop logic
         };
         
         setScreenOn(true);
+        console.log('✅ Screen share started and sent to peers');
+        
       } else {
-        setScreenOn(false);
-        setScreenStream((s) => {
-          s?.getTracks()?.forEach(stopTrack);
-          return null;
-        });
-        if (screenVideoRef.current) {
-          screenVideoRef.current.srcObject = null;
-        }
+        console.log('📺 Stopping screen share...');
+        const screenTrack = screenStream?.getVideoTracks()?.[0];
+        await handleScreenStop(screenStream, screenTrack);
       }
-    } catch {
-      // user canceled
+    } catch (e) {
+      console.error('Screen share error:', e);
+      // User canceled or error occurred - clean up
+      setScreenOn(false);
+      setScreenStream((s) => {
+        s?.getTracks()?.forEach(stopTrack);
+        return null;
+      });
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = null;
+      }
+      // Re-enable camera if it was disabled
+      if (camOn) {
+        const cameraTrack = stream?.getVideoTracks()?.[0];
+        if (cameraTrack) cameraTrack.enabled = true;
+      }
     }
   };
 
@@ -805,8 +1193,10 @@ export function VideoCall({ roomId, user }) {
     stream?.getTracks()?.forEach(stopTrack);
     screenStream?.getTracks()?.forEach(stopTrack);
     
-    window.history.replaceState({}, "", `${location.origin}/#workspace?room=${encodeURIComponent(roomId || "")}`);
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    // Navigate to landing page (remove all hash parameters)
+    window.location.hash = '';
+    // Alternative: use window.location.href to go to root
+    // window.location.href = location.origin;
   };
 
   const btnOn = "bg-green-500 text-white hover:bg-green-400 hover:ring-4 hover:ring-green-300/40 hover:shadow-xl";
@@ -916,7 +1306,7 @@ export function VideoCall({ roomId, user }) {
                       <div className="flex items-center space-x-2">
                         <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                         <span className="text-xs">
-                          {isConnected ? 'Connected' : 'Offline'}
+                          {chatConnected ? 'Connected (Socket.IO)' : fallbackConnected ? 'Connected (P2P)' : 'Offline'}
                         </span>
                         {onlineUsers.size > 0 && (
                           <span className="text-xs">• {onlineUsers.size} online</span>
@@ -924,13 +1314,49 @@ export function VideoCall({ roomId, user }) {
                       </div>
                     </div>
                     
+                    {/* Online users list */}
+                    {chatOnlineUsers.length > 0 && (
+                      <div className="mb-4 p-2 bg-blue-900/30 border border-blue-600/30 rounded-lg">
+                        <div className="text-xs text-blue-300 mb-2">Online now:</div>
+                        <div className="flex flex-wrap gap-1">
+                          {chatOnlineUsers.map((user, index) => (
+                            <span
+                              key={index}
+                              className="px-2 py-1 bg-green-600/20 text-green-300 text-xs rounded-full"
+                            >
+                              {user.name || `User ${index + 1}`}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Connection status message */}
+                    {!isConnected && roomId && (
+                      <div className="mb-4 p-2 bg-yellow-900/30 border border-yellow-600/30 rounded-lg">
+                        <div className="text-xs text-yellow-300">
+                          🔄 Connecting to chat server...
+                        </div>
+                      </div>
+                    )}
+                    
+                    {isConnected && chatConnected && chatOnlineUsers.length === 0 && (
+                      <div className="mb-4 p-2 bg-green-900/30 border border-green-600/30 rounded-lg">
+                        <div className="text-xs text-green-300">
+                          ✅ Connected! Waiting for others to join...
+                        </div>
+                      </div>
+                    )}
+                    
                     {/* Messages area */}
                     <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-2">
                       {messages.length === 0 ? (
                         <div className="text-center text-gray-500 py-8">
                           <div className="text-2xl mb-2">💬</div>
                           <div className="text-sm">No messages yet</div>
-                          <div className="text-xs mt-1">Start a conversation with your team</div>
+                          <div className="text-xs mt-1">
+                            {isConnected ? 'Start a conversation with your team' : 'Connecting to chat...'}
+                          </div>
                         </div>
                       ) : (
                         messages.map((message) => (
@@ -954,13 +1380,13 @@ export function VideoCall({ roomId, user }) {
                           placeholder={roomId ? (isConnected ? "Type a message..." : "Connecting...") : "No session active"}
                           value={chatMessage}
                           onChange={(e) => setChatMessage(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && handleSendChatMessage()}
-                          disabled={!roomId}
+                          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendChatMessage()}
+                          disabled={!roomId || !isConnected}
                           className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                         />
                         <button 
                           onClick={handleSendChatMessage}
-                          disabled={!chatMessage.trim() || !roomId}
+                          disabled={!chatMessage.trim() || !roomId || !isConnected}
                           className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
                         >
                           Send
@@ -968,7 +1394,17 @@ export function VideoCall({ roomId, user }) {
                       </div>
                       {!isConnected && roomId && (
                         <div className="text-xs text-yellow-400 mt-2">
-                          Real-time sync with TeamChat requires connection
+                          ⏳ Connecting to chat server... Messages will sync once connected.
+                        </div>
+                      )}
+                      {isConnected && chatConnected && (
+                        <div className="text-xs text-green-400 mt-2">
+                          ✅ Chat is live via Socket.IO • Messages sync in real-time
+                        </div>
+                      )}
+                      {isConnected && !chatConnected && fallbackConnected && (
+                        <div className="text-xs text-blue-400 mt-2">
+                          🔗 Chat connected via P2P • Limited to same network
                         </div>
                       )}
                     </div>
@@ -1035,39 +1471,54 @@ export function VideoCall({ roomId, user }) {
         <div className={`flex-1 min-h-0 p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 transition-all duration-300 ${activePanel ? 'mr-80' : ''}`}>
           {/* Local video */}
           <div className="relative bg-gray-800 rounded-xl overflow-hidden min-h-[300px] lg:min-h-[400px]">
-            {/* Debug info overlay */}
-            <div className="absolute top-2 left-2 bg-black/70 text-white text-xs p-2 rounded z-20">
-              <div>Room: {roomId || 'none'}</div>
-              <div>Stream: {stream ? 'yes' : 'no'}</div>
-              <div>CamOn: {camOn ? 'yes' : 'no'}</div>
-              <div>Tracks: V:{stream?.getVideoTracks()?.length || 0} A:{stream?.getAudioTracks()?.length || 0}</div>
-              <div>VideoEnabled: {stream?.getVideoTracks()?.[0]?.enabled ? 'yes' : 'no'}</div>
-            </div>
-            
+            {/* Always render video element but hide when camera is off */}
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className={`w-full h-full object-cover transition-opacity duration-300 ${camOn ? 'opacity-100' : 'opacity-0'}`}
+              className={`w-full h-full object-cover bg-black ${!camOn ? 'hidden' : ''}`}
+              onLoadedMetadata={() => console.log('✅ Local video metadata loaded')}
+              onPlay={() => console.log('✅ Local video playing')}
+              onError={(e) => console.error('❌ Local video error:', e)}
             />
             {!camOn && (
-              <div className="absolute inset-0 bg-gray-900 flex items-center justify-center z-10">
+              <div className="absolute inset-0 w-full h-full bg-gray-900 flex items-center justify-center">
                 <div className="text-center">
-                  <div className="w-20 h-20 mx-auto mb-4 bg-blue-500 rounded-full flex items-center justify-center">
-                    <span className="text-2xl font-bold text-white">
-                      {displayName?.[0]?.toUpperCase() || "Y"}
-                    </span>
-                  </div>
+                  {user?.avatar_url ? (
+                    <div className="w-32 h-32 mx-auto mb-4 rounded-full overflow-hidden bg-gray-700">
+                      <img 
+                        src={user.avatar_url} 
+                        alt={displayName}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          // Fallback to initials if image fails to load
+                          e.target.style.display = 'none';
+                          e.target.nextElementSibling.style.display = 'flex';
+                        }}
+                      />
+                      <div className="w-32 h-32 bg-blue-500 rounded-full hidden items-center justify-center">
+                        <span className="text-4xl font-bold text-white">
+                          {displayName?.[0]?.toUpperCase() || "Y"}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-32 h-32 mx-auto mb-4 bg-blue-500 rounded-full flex items-center justify-center">
+                      <span className="text-4xl font-bold text-white">
+                        {displayName?.[0]?.toUpperCase() || "Y"}
+                      </span>
+                    </div>
+                  )}
                   <div className="text-sm text-gray-300">Camera is off</div>
                 </div>
               </div>
             )}
-            <div className="absolute bottom-3 left-3 bg-black/60 px-2 py-1 rounded text-sm">
+            <div className="absolute bottom-3 left-3 bg-black/60 px-2 py-1 rounded text-sm z-20">
               {displayName || "You"}
             </div>
             {!micOn && (
-              <div className="absolute top-3 left-3 bg-red-500 p-1.5 rounded-full">
+              <div className="absolute top-3 left-3 bg-red-500 p-1.5 rounded-full z-20">
                 <MicIcon off={true} />
               </div>
             )}
@@ -1082,22 +1533,118 @@ export function VideoCall({ roomId, user }) {
                 <div className="text-xs text-gray-500 mt-1">Share the session link to invite others</div>
               </div>
             ) : (
-              remoteStreams.map(({ peerId, stream }) => (
-                <div key={peerId} className="w-full sm:w-1/2 lg:w-1/3 bg-black rounded overflow-hidden relative">
-                  <video
-                    className="w-full h-48 object-cover bg-black"
-                    autoPlay
-                    playsInline
-                    ref={(el) => {
-                      if (!el) return;
-                      if (el.srcObject !== stream) el.srcObject = stream;
-                    }}
-                  />
-                  <div className="absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-sm">
-                    {peerId}
+              remoteStreams.map(({ peerId, stream: remoteStream, user: remoteUser }) => {
+                const videoTracks = remoteStream?.getVideoTracks?.() || [];
+                console.log(`Remote peer ${peerId} has ${videoTracks.length} video track(s):`, 
+                  videoTracks.map(t => ({
+                    id: t.id,
+                    label: t.label,
+                    enabled: t.enabled,
+                    readyState: t.readyState
+                  }))
+                );
+                
+                const isScreenSharing = screenSharingPeers.has(peerId);
+                const hasScreenShare = isScreenSharing;
+                
+                // Prioritize track based on signal
+                let displayVideoTrack = null;
+                if (isScreenSharing && videoTracks.length > 1) {
+                  // Screen is the last added track
+                  displayVideoTrack = videoTracks[videoTracks.length - 1];
+                  console.log(`Using screen track for peer ${peerId}`);
+                } else {
+                  // Use first track (camera) if enabled
+                  displayVideoTrack = videoTracks[0];
+                  if (displayVideoTrack && !displayVideoTrack.enabled) {
+                    displayVideoTrack = null; // Hide if disabled
+                  }
+                  console.log(`Using camera track for peer ${peerId}`);
+                }
+                
+                const hasVideo = !!displayVideoTrack;
+                
+                console.log(`Remote peer ${peerId}: isScreenSharing=${isScreenSharing}, hasVideo=${hasVideo}, hasScreenShare=${hasScreenShare}`);
+                
+                const remoteName = remoteUser?.name || remoteUser?.email || peerId;
+                const displayInitial = remoteName?.[0]?.toUpperCase() || 'U';
+                const remoteAvatarUrl = remoteUser?.avatar_url;
+                
+                // If screen sharing, show in full width
+                const containerClass = hasScreenShare 
+                  ? "w-full bg-gray-800 rounded overflow-hidden relative min-h-[400px]"
+                  : "w-full sm:w-1/2 lg:w-1/3 bg-gray-800 rounded overflow-hidden relative h-48";
+                
+                // Create display stream
+                const displayStream = new MediaStream();
+                if (displayVideoTrack) {
+                  displayStream.addTrack(displayVideoTrack);
+                }
+                // Add audio tracks from remote stream
+                remoteStream?.getAudioTracks?.().forEach(track => displayStream.addTrack(track));
+                
+                return (
+                  <div key={peerId} className={containerClass}>
+                    {hasVideo ? (
+                      <>
+                        <video
+                          className="w-full h-full object-contain bg-black"
+                          autoPlay
+                          playsInline
+                          ref={(el) => {
+                            if (!el) return;
+                            if (el.srcObject !== displayStream) {
+                              console.log(`Setting srcObject for peer ${peerId}`);
+                              el.srcObject = displayStream;
+                            }
+                          }}
+                          onLoadedMetadata={() => console.log(`Video loaded for peer ${peerId}`)}
+                        />
+                        {hasScreenShare && (
+                          <div className="absolute top-3 left-3 bg-blue-600/90 px-3 py-1.5 rounded-lg text-sm z-20 flex items-center gap-2">
+                            <ScreenIcon on={true} />
+                            <span>{remoteName} is presenting</span>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="w-full h-full bg-gray-900 flex items-center justify-center">
+                        <div className="text-center">
+                          {remoteAvatarUrl ? (
+                            <div className="w-20 h-20 mx-auto mb-2 rounded-full overflow-hidden bg-gray-700">
+                              <img 
+                                src={remoteAvatarUrl} 
+                                alt={remoteName}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  // Fallback to initials if image fails to load
+                                  e.target.style.display = 'none';
+                                  e.target.nextElementSibling.style.display = 'flex';
+                                }}
+                              />
+                              <div className="w-20 h-20 bg-blue-500 rounded-full hidden items-center justify-center">
+                                <span className="text-2xl font-bold text-white">
+                                  {displayInitial}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="w-20 h-20 mx-auto mb-2 bg-blue-500 rounded-full flex items-center justify-center">
+                              <span className="text-2xl font-bold text-white">
+                                {displayInitial}
+                              </span>
+                            </div>
+                          )}
+                          <div className="text-xs text-gray-400">Camera is off</div>
+                        </div>
+                      </div>
+                    )}
+                    <div className="absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-sm z-20">
+                      {remoteName}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 

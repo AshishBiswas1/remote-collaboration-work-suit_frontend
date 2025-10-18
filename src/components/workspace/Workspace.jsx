@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { VideoCall } from "./VideoCall";
 import { DocEditor } from "./DocEditor";
 import { Whiteboard } from "./Whiteboard";
-import { TeamChat } from "./TeamChat";
 import { TaskBoard } from "./TaskBoard";
 import { useAuth } from "../../context/AuthContext";
 import { sessionAPI } from "../../services/sessionApi";
@@ -109,7 +108,6 @@ export function Workspace() {
   const tabs = [
     { id: "video", label: "Video Call", icon: "🎥", component: VideoCall },
     { id: "docs", label: "Documents", icon: "📝", component: DocEditor },
-    { id: "teamchat", label: "Team Chat", icon: "💬", component: TeamChat },
     { id: "whiteboard", label: "Whiteboard", icon: "🎨", component: Whiteboard },
     { id: "tasks", label: "Tasks", icon: "📋", component: TaskBoard },
   ];
