@@ -550,18 +550,56 @@ export function Workspace() {
                                   </button>
                                   <button
                                     onClick={async () => {
-                                      const link = `${location.origin}/#workspace?room=${encodeURIComponent(s.id)}`;
+                                      // Check if this session has a backend session ID
+                                      if (!s.backendSessionId) {
+                                        // Fallback to simple hash link for old sessions
+                                        const link = `${location.origin}/#workspace?room=${encodeURIComponent(s.id)}`;
+                                        try {
+                                          await navigator.clipboard.writeText(link);
+                                          setToast("Link copied!");
+                                          setTimeout(() => setToast(""), 2000);
+                                        } catch {
+                                          setToast("Failed to copy link.");
+                                          setTimeout(() => setToast(""), 2000);
+                                        }
+                                        return;
+                                      }
+
+                                      // Generate proper shareable link with invitation token
                                       try {
-                                        await navigator.clipboard.writeText(link);
-                                        setToast("Link copied!");
-                                        setTimeout(() => setToast(""), 2000);
-                                      } catch {
-                                        setToast("Failed to copy link.");
-                                        setTimeout(() => setToast(""), 2000);
+                                        setToast("Generating shareable link...");
+                                        
+                                        const response = await sessionAPI.generateShareLink(s.backendSessionId, {
+                                          expiresInHours: 24,
+                                          maxUses: null
+                                        });
+
+                                        if (!response.ok) {
+                                          throw new Error('Failed to generate share link');
+                                        }
+
+                                        const result = await response.json();
+                                        const shareableLink = result.data.shareableLink;
+                                        
+                                        await navigator.clipboard.writeText(shareableLink);
+                                        setToast("Shareable link copied! Valid for 24 hours.");
+                                        setTimeout(() => setToast(""), 3000);
+                                      } catch (error) {
+                                        console.error('Failed to generate share link:', error);
+                                        // Fallback to hash link
+                                        const link = `${location.origin}/#workspace?room=${encodeURIComponent(s.id)}`;
+                                        try {
+                                          await navigator.clipboard.writeText(link);
+                                          setToast("Basic link copied (shareable link generation failed).");
+                                          setTimeout(() => setToast(""), 3000);
+                                        } catch {
+                                          setToast("Failed to copy link.");
+                                          setTimeout(() => setToast(""), 2000);
+                                        }
                                       }
                                     }}
                                     className="btn btn-glass py-1 sm:py-1.5 text-xs sm:text-sm px-2 sm:px-3 hidden sm:block"
-                                    title="Copy link"
+                                    title="Generate and copy shareable link"
                                   >
                                     📋
                                   </button>

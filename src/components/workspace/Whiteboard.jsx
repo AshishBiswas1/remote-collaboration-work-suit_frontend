@@ -40,8 +40,33 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
 
     // Create new Yjs document and WebRTC provider for real-time collaboration
     const ydoc = new Y.Doc();
+    
+    // Y-WebRTC provider with local network discovery (no external signaling)
     const provider = new WebrtcProvider(`whiteboard-${viewRoom}`, ydoc, {
-      signaling: ["wss://signaling.yjs.dev"],
+      // Disable signaling servers - use local broadcast and WebRTC only
+      signaling: [],
+      // Add connection options
+      maxConns: 20 + Math.floor(Math.random() * 15),
+      filterBcConns: false,
+      // Add STUN servers for WebRTC NAT traversal
+      peerOpts: {
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      }
+    });
+
+    // Handle connection status
+    provider.on('status', ({ status }) => {
+      console.log('Whiteboard collaboration status:', status);
+    });
+
+    // Handle connection errors
+    provider.on('connection-error', (error) => {
+      console.error('Whiteboard collaboration connection error:', error);
     });
 
     ydocRef.current = ydoc;

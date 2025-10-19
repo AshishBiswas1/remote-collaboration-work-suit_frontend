@@ -39,12 +39,19 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
     }
 
     // Connect to Socket.IO server for task board
-    const socket = io("http//localhost:3001", {
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
+    
+    const socket = io(socketUrl, {
       query: {
         roomId: `taskboard-${viewRoom}`,
         userId: userId,
         userName: displayName,
       },
+      // Add connection options
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
+      timeout: 10000,
     });
 
     socketRef.current = socket;
