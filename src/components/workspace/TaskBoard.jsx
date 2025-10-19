@@ -128,6 +128,24 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
       });
     });
 
+    socket.on("task-removed", ({ columnId, taskId }) => {
+      console.log(`🗑️ Received task-removed event: taskId=${taskId}, columnId=${columnId}`);
+      setBoard(prev => {
+        const column = prev.find(col => col.id === columnId);
+        const taskExists = column?.items.some(item => item.id === taskId);
+        console.log(`📋 Task exists in local state: ${taskExists}`);
+        
+        const newBoard = prev.map(col => 
+          col.id === columnId 
+            ? { ...col, items: col.items.filter(item => item.id !== taskId) }
+            : col
+        );
+        saveJSON(tasksKey(userId, viewRoom), newBoard);
+        console.log(`✅ Task removed from local state`);
+        return newBoard;
+      });
+    });
+
     return () => {
       socket.disconnect();
       setIsConnected(false);
@@ -145,11 +163,11 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
       createdAt: Date.now()
     };
 
-    // If connected to Socket.IO, emit the task addition
+    // Send to server - server will broadcast to ALL users (including sender)
     if (socketRef.current && isConnected) {
       socketRef.current.emit("add-task", { columnId: colId, task: newTask });
     } else {
-      // Fallback to local update
+      // Fallback to local update if offline
       setBoard((prev) =>
         prev.map((c) =>
           c.id === colId ? { ...c, items: [newTask, ...c.items] } : c
@@ -163,10 +181,9 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
   const moveCard = (fromId, toId, card) => {
     if (fromId === toId || !viewRoom) return;
     
-    const toColumn = board.find(c => c.id === toId);
     const newIndex = 0; // Add to beginning of target column
 
-    // If connected to Socket.IO, emit the move
+    // Send to server - server will broadcast to ALL users (including sender)
     if (socketRef.current && isConnected) {
       socketRef.current.emit("move-task", { 
         taskId: card.id, 
@@ -175,7 +192,7 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
         newIndex 
       });
     } else {
-      // Fallback to local update
+      // Fallback to local update if offline
       setBoard((prev) => {
         const removed = prev.map((c) =>
           c.id === fromId ? { ...c, items: c.items.filter((i) => i.id !== card.id) } : c
@@ -190,11 +207,15 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
   const removeCard = (colId, cardId) => {
     if (!viewRoom) return;
 
-    // If connected to Socket.IO, emit the removal
+    console.log(`🗑️ removeCard called: columnId=${colId}, taskId=${cardId}`);
+
+    // Send to server - server will broadcast to ALL users (including sender)
     if (socketRef.current && isConnected) {
+      console.log(`📤 Emitting remove-task to server`);
       socketRef.current.emit("remove-task", { columnId: colId, taskId: cardId });
     } else {
-      // Fallback to local update
+      console.log(`⚠️ Not connected to Socket.IO, updating locally`);
+      // Fallback to local update if offline
       setBoard((prev) =>
         prev.map((c) =>
           c.id === colId ? { ...c, items: c.items.filter((i) => i.id !== cardId) } : c
