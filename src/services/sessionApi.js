@@ -52,12 +52,12 @@ export const sessionAPI = {
 
   joinSessionByLink: (sessionId, invitation) => {
     const token = localStorage.getItem('token');
-    const headers = {};
+    const headers = { 'Content-Type': 'application/json' };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
     return fetch(`${API_BASE}/${sessionId}/join?invitation=${encodeURIComponent(invitation)}`, {
-      method: 'GET',
+      method: 'POST',
       headers,
       credentials: 'include'
     });
