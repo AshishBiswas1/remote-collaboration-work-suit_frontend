@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { io as ioClient } from 'socket.io-client';
 import { useSharedChat } from "../../hooks/useSharedChat";
 
-const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
 
 function formatTime(ts = Date.now()) {
   return new Intl.DateTimeFormat(undefined, {
@@ -429,7 +429,7 @@ export function VideoCall({ roomId, user }) {
       return;
     }
     
-    const socket = ioClient('http://localhost:8000', {
+    const socket = ioClient(SOCKET_URL, {
       path: '/socket.io/',
       transports: ['polling'], // Start with polling only, let Socket.IO handle upgrade
       forceNew: true,

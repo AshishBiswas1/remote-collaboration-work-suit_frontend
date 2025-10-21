@@ -37,8 +37,9 @@ const getProvider = (roomId, yDoc) => {
   
   if (!providerInstances.has(providerKey)) {
     // Create provider - let it create its own Awareness instance
+    const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:1234';
     const provider = new WebsocketProvider(
-      'ws://localhost:1234',  // Local WebSocket server
+      WS_URL,
       providerKey,
       yDoc
     );

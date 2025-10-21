@@ -17,7 +17,7 @@ export function useRealTimeChat(roomId, user) {
   const maxReconnectAttempts = 5
 
   // Socket.IO server URL - uses environment variable
-  const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000'
 
   // Initialize Socket.IO connection
   const initializeSocket = useCallback(() => {

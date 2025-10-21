@@ -39,7 +39,7 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
     }
 
     // Connect to Socket.IO server for task board
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000'; // Updated to use VITE_SOCKET_URL
     
     const socket = io(socketUrl, {
       query: {

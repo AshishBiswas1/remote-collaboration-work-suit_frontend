@@ -42,8 +42,9 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
     if (!viewRoom || !user) return;
 
 
-    // Connect to Socket.IO server
-    const socket = io('http://localhost:8000', {
+    // Connect to Socket.IO server using environment variable
+    const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:8000';
+    const socket = io(SOCKET_URL, {
       path: '/socket.io/',
       transports: ['polling', 'websocket'], // Try polling first, then upgrade to websocket
       reconnection: true,

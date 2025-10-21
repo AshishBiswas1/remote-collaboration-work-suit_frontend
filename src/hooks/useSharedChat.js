@@ -198,7 +198,7 @@ export function useSharedChat(roomId, user) {
         const provider = new WebrtcProvider(roomId, ydoc, {
           // Use backend signaling server for WebRTC coordination
           signaling: [
-            'ws://localhost:8000/yjs-ws',  // Your backend WebRTC signaling server
+            import.meta.env.VITE_WS_URL || 'ws://localhost:8000/yjs-ws',  // Yjs WebRTC signaling server
           ],
           // Enable broadcast channel for same-origin communication
           enableBroadcastChannel: true,
