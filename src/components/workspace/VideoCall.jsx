@@ -136,7 +136,6 @@ export function VideoCall({ roomId, user }) {
       // Reset camera state to true for fresh sessions to avoid black screen issues
       // Only use persisted state if user explicitly toggled during this session
       const savedCameraState = true; // Always start with camera on
-      console.log('📹 Resetting camera state for room:', roomId, '-> state:', savedCameraState);
       setCamOn(savedCameraState);
       
       // Clear any old persisted state to prevent black screen issues
@@ -148,11 +147,9 @@ export function VideoCall({ roomId, user }) {
   useEffect(() => {
     if (!stream || !roomId) return;
     
-    console.log('🔄 Syncing mic state:', micOn);
     const audioTrack = stream.getAudioTracks()?.[0];
     if (audioTrack) {
       audioTrack.enabled = micOn;
-      console.log('🎤 Audio track state updated to:', micOn);
     }
     
   }, [micOn, stream, roomId]);
@@ -163,7 +160,6 @@ export function VideoCall({ roomId, user }) {
     
     // Only update if srcObject is different to avoid unnecessary updates
     if (localVideoRef.current.srcObject !== stream) {
-      console.log('🎥 Updating local video srcObject');
       localVideoRef.current.srcObject = stream;
       
       // Ensure video plays (especially important after toggling camera)
@@ -187,7 +183,6 @@ export function VideoCall({ roomId, user }) {
       return;
     }
 
-    console.log('💬 Connecting to Chat Socket.IO:', SOCKET_URL);
     
     // Create separate socket for chat
     const chatSocket = ioClient(SOCKET_URL, {
@@ -203,7 +198,6 @@ export function VideoCall({ roomId, user }) {
 
     // Connection events
     chatSocket.on('connect', () => {
-      console.log('✅ Chat Socket.IO connected:', chatSocket.id);
       setChatConnected(true);
       
       // Join the chat room
@@ -218,7 +212,6 @@ export function VideoCall({ roomId, user }) {
     });
 
     chatSocket.on('disconnect', () => {
-      console.log('❌ Chat Socket.IO disconnected');
       setChatConnected(false);
       setChatOnlineUsers([]);
     });
@@ -230,7 +223,6 @@ export function VideoCall({ roomId, user }) {
 
     // Message events
     chatSocket.on('room-state', (data) => {
-      console.log('📦 Received chat room state:', data);
       if (data.messages) {
         const formattedMessages = data.messages.map(msg => ({
           id: msg.id || Date.now(),
@@ -246,7 +238,6 @@ export function VideoCall({ roomId, user }) {
     });
 
     chatSocket.on('new-message', (messageData) => {
-      console.log('💬 New chat message received:', messageData);
       const newMsg = {
         id: messageData.id || Date.now(),
         user: messageData.user?.name || messageData.user || 'Unknown',
@@ -257,14 +248,12 @@ export function VideoCall({ roomId, user }) {
     });
 
     chatSocket.on('user-joined', (data) => {
-      console.log('👋 User joined chat:', data);
       if (data.onlineUsers) {
         setChatOnlineUsers(data.onlineUsers);
       }
     });
 
     chatSocket.on('user-left', (data) => {
-      console.log('👋 User left chat:', data);
       if (data.onlineUsers) {
         setChatOnlineUsers(data.onlineUsers);
       }
@@ -353,25 +342,21 @@ export function VideoCall({ roomId, user }) {
 
   async function createPeerConnection(peerId, isInitiator, userData = null) {
     if (!peerId || peersRef.current.has(peerId)) return;
-    console.log(`🤝 Creating ${isInitiator ? 'initiator' : 'responder'} peer connection for:`, peerId, 'user:', userData);
     
     const pc = new RTCPeerConnection(configuration);
     const remoteStream = new MediaStream();
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('🧊 Sending ICE candidate to:', peerId);
         socketRef.current?.emit('ice-candidate', { to: peerId, candidate: event.candidate });
       }
     };
 
     pc.ontrack = (ev) => {
-      console.log('📺 Received remote track from:', peerId, 'kind:', ev.track.kind, 'label:', ev.track.label);
       try {
         // Add the track directly to the remote stream
         if (!remoteStream.getTracks().find(t => t.id === ev.track.id)) {
           remoteStream.addTrack(ev.track);
-          console.log('✅ Added track to remote stream:', ev.track.kind, ev.track.label);
         }
         
         // Update the remote stream for this peer
@@ -382,11 +367,9 @@ export function VideoCall({ roomId, user }) {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`🔗 Peer ${peerId} connection state:`, pc.connectionState);
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`🧊 Peer ${peerId} ICE connection state:`, pc.iceConnectionState);
     };
 
     // Add local tracks if available (camera/mic)
@@ -394,7 +377,6 @@ export function VideoCall({ roomId, user }) {
       // Get the current local stream from state
       const currentLocalStream = localStreamRef.current || stream;
       if (currentLocalStream?.getTracks()?.length > 0) {
-        console.log('📤 Adding local camera/mic tracks to peer connection for:', peerId);
         currentLocalStream.getTracks().forEach((track) => pc.addTrack(track, currentLocalStream));
       } else {
         console.warn('⚠️ No local stream to add tracks from yet for peer:', peerId);
@@ -402,7 +384,6 @@ export function VideoCall({ roomId, user }) {
         const checkForStream = () => {
           const laterStream = localStreamRef.current;
           if (laterStream?.getTracks()?.length > 0) {
-            console.log('📤 Adding local tracks (delayed) to peer connection for:', peerId);
             laterStream.getTracks().forEach((track) => pc.addTrack(track, laterStream));
           }
         };
@@ -411,7 +392,6 @@ export function VideoCall({ roomId, user }) {
       
       // Add screen share track if currently sharing
       if (screenStream?.getTracks()?.length > 0) {
-        console.log('📤 Adding screen share track to peer connection for:', peerId);
         screenStream.getTracks().forEach((track) => pc.addTrack(track, screenStream));
       }
     } catch (e) {
@@ -422,7 +402,6 @@ export function VideoCall({ roomId, user }) {
 
     if (isInitiator) {
       try {
-        console.log('📤 Creating and sending offer to:', peerId);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         const offerData = { 
@@ -433,10 +412,8 @@ export function VideoCall({ roomId, user }) {
         // Embed screen sharing state if active
         if (screenOn) {
           offerData.screenSharing = true;
-          console.log('🖥️ Embedding screenSharing=true in initial offer to:', peerId);
         }
         socketRef.current?.emit('offer', offerData);
-        console.log('✅ Offer sent', screenOn ? 'with screen flag' : 'without screen flag');
       } catch (e) {
         console.error('Error creating offer', e);
       }
@@ -449,11 +426,9 @@ export function VideoCall({ roomId, user }) {
     // Check if we have a stream before connecting
     const currentStream = localStreamRef.current || stream;
     if (!currentStream) {
-      console.log('📡 No stream available yet, delaying socket connection');
       return;
     }
     
-    console.log('🔄 Attempting to connect to Socket.IO server...');
     const socket = ioClient('http://localhost:8000', {
       path: '/socket.io/',
       transports: ['polling'], // Start with polling only, let Socket.IO handle upgrade
@@ -468,8 +443,6 @@ export function VideoCall({ roomId, user }) {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('🔌 Socket connected for video call', socket.id);
-      console.log('📞 Joining call room:', roomId);
       socket.emit('join-call', { roomId, user });
     });
 
@@ -479,7 +452,6 @@ export function VideoCall({ roomId, user }) {
     });
 
     socket.on('disconnect', (reason) => {
-      console.log('🔌 Socket disconnected:', reason);
       if (reason === 'io server disconnect') {
         // the disconnection was initiated by the server, reconnect manually
         socket.connect();
@@ -487,11 +459,9 @@ export function VideoCall({ roomId, user }) {
     });
 
     socket.on('reconnect', (attemptNumber) => {
-      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
     });
 
     socket.on('reconnect_attempt', (attemptNumber) => {
-      console.log('🔄 Socket reconnection attempt', attemptNumber);
     });
 
     socket.on('reconnect_error', (error) => {
@@ -504,33 +474,25 @@ export function VideoCall({ roomId, user }) {
     });
 
     socket.on('existing-peers', async (peers) => {
-      console.log('👥 Existing peers in room:', peers);
       for (const p of peers) {
-        console.log('🤝 Creating peer connection for existing peer:', p.peerId, 'user:', p.user);
         await createPeerConnection(p.peerId, true, p.user);
       }
     });
 
     socket.on('new-peer', async ({ peerId, user: newUser }) => {
-      console.log('👋 New peer joined:', peerId, newUser);
       await createPeerConnection(peerId, false, newUser);
     });
 
     socket.on('offer', async ({ from, sdp, user: offerUser, screenSharing }) => {
-      console.log('📨 Received offer from:', from, 'user:', offerUser, 'screenSharing:', screenSharing);
-      console.log('   SDP type:', sdp?.type, 'has video:', sdp?.sdp?.includes('m=video'));
       if (!peersRef.current.has(from)) {
-        console.log('   Creating new peer connection for:', from);
         await createPeerConnection(from, false, offerUser);
       }
       const pc = peersRef.current.get(from).pc;
       try {
-        console.log('   Setting remote description...');
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         
         // Handle embedded screen sharing flag after remote desc (tracks may start flowing)
         if (screenSharing !== undefined) {
-          console.log(`🖥️ Updating screen share state for ${from}: ${screenSharing ? 'start' : 'stop'}`);
           if (screenSharing) {
             setScreenSharingPeers(prev => new Set([...prev, from]));
           } else {
@@ -542,43 +504,35 @@ export function VideoCall({ roomId, user }) {
           }
         }
         
-        console.log('   Creating answer...');
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        console.log('📤 Sending answer to:', from);
         socket.emit('answer', { to: from, sdp: pc.localDescription });
-        console.log('✅ Answer sent successfully');
       } catch (e) {
         console.error('Error handling offer', e);
       }
     });
 
     socket.on('answer', async ({ from, sdp }) => {
-      console.log('📨 Received answer from:', from);
       const pcWrap = peersRef.current.get(from);
       if (!pcWrap) return;
       try {
         await pcWrap.pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        console.log('✅ Answer applied for peer:', from);
       } catch (e) {
         console.error('Error applying answer', e);
       }
     });
 
     socket.on('ice-candidate', async ({ from, candidate }) => {
-      console.log('🧊 Received ICE candidate from:', from);
       const pcWrap = peersRef.current.get(from);
       if (!pcWrap || !candidate) return;
       try {
         await pcWrap.pc.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log('✅ ICE candidate added for peer:', from);
       } catch (e) {
         console.error('Error adding remote ICE candidate', e);
       }
     });
 
     socket.on('peer-left', ({ peerId }) => {
-      console.log('👋 Peer left:', peerId);
       removePeer(peerId);
     });
   };
@@ -590,19 +544,16 @@ export function VideoCall({ roomId, user }) {
     const initializeMedia = async () => {
       // Don't initialize media until we have a roomId
       if (!roomId) {
-        console.log('📹 Waiting for roomId before initializing media');
         return;
       }
       
       // Only initialize media if we don't have a stream yet
       if (stream || localStreamRef.current) {
-        console.log('📹 Media stream already exists, skipping initialization');
         return;
       }
       
       setError("");
       try {
-        console.log('🎬 Initializing media stream for room:', roomId);
         
         // Always request both audio and video initially
         const media = await navigator.mediaDevices.getUserMedia({
@@ -624,7 +575,6 @@ export function VideoCall({ roomId, user }) {
           await localVideoRef.current.play().catch(() => {});
         }
         
-        console.log('✅ Media stream initialized successfully');
         
       } catch (e) {
         if (cancelled) return;
@@ -655,7 +605,6 @@ export function VideoCall({ roomId, user }) {
   // Socket connection when roomId and stream are available
   useEffect(() => {
     if (!roomId) {
-      console.log('📡 No roomId available for socket connection');
       return;
     }
     
@@ -663,7 +612,6 @@ export function VideoCall({ roomId, user }) {
     const connectWhenReady = () => {
       const currentStream = localStreamRef.current || stream;
       if (currentStream && !socketRef.current) {
-        console.log('📡 Connecting to socket for room:', roomId);
         connectSocket();
       } else if (!currentStream) {
         // Check again in a bit if stream isn't ready yet
@@ -676,7 +624,6 @@ export function VideoCall({ roomId, user }) {
     // Cleanup socket when roomId changes or component unmounts
     return () => {
       if (socketRef.current) {
-        console.log('📡 Cleaning up socket connection');
         socketRef.current.emit('leave-call', { roomId });
         socketRef.current.disconnect();
         socketRef.current = null;
@@ -690,7 +637,6 @@ export function VideoCall({ roomId, user }) {
     return () => {
       if (!roomId) {
         // Only cleanup streams when actually leaving (no roomId)
-        console.log('🧹 Cleaning up media streams...');
         const currentStream = localStreamRef.current || stream;
         currentStream?.getTracks()?.forEach(stopTrack);
         setStream(null);
@@ -724,7 +670,6 @@ export function VideoCall({ roomId, user }) {
     const handleHashChange = () => {
       // Only cleanup when actually leaving the workspace entirely
       if (!location.hash.includes("#workspace")) {
-        console.log('🚪 Leaving workspace - cleaning up');
         
         // Clear localStorage for this room when leaving workspace completely
         if (roomId) {
@@ -749,7 +694,6 @@ export function VideoCall({ roomId, user }) {
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
       
-      console.log('🧹 VideoCall component unmounting');
       
       // Clean up peer connections
       peersRef.current.forEach((peer) => {
@@ -766,7 +710,6 @@ export function VideoCall({ roomId, user }) {
       // Only stop media tracks on actual unmount (leaving video call entirely)
       const currentStream = localStreamRef.current || stream;
       if (currentStream) {
-        console.log('🛑 Stopping media tracks on unmount');
         currentStream.getTracks().forEach(track => track.stop());
       }
       
@@ -800,7 +743,6 @@ export function VideoCall({ roomId, user }) {
       return { audio: currentAudio };
     }
     
-    console.log('🎤 Acquiring new audio track...');
     const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     const newAudio = audioOnly.getAudioTracks()[0];
     const videoTrack = stream?.getVideoTracks?.().find(t => t.readyState === "live") || null;
@@ -820,10 +762,8 @@ export function VideoCall({ roomId, user }) {
     peersRef.current.forEach(({ pc }) => {
       const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
       if (sender) {
-        console.log('📤 Replacing audio track in peer connection');
         sender.replaceTrack(newAudio).catch(e => console.error('Failed to replace track:', e));
       } else {
-        console.log('📤 Adding new audio track to peer connection');
         pc.addTrack(newAudio, merged);
       }
     });
@@ -835,11 +775,9 @@ export function VideoCall({ roomId, user }) {
     let currentVideo = stream?.getVideoTracks?.().find(t => t.readyState === "live");
     if (currentVideo && !currentVideo.enabled) {
       currentVideo.enabled = true;
-      console.log('✅ Existing video track enabled');
       return { video: currentVideo };
     }
     
-    console.log('📹 Acquiring new video track...');
     const videoOnly = await navigator.mediaDevices.getUserMedia({ 
       audio: false, 
       video: { width: 1280, height: 720 } 
@@ -893,19 +831,16 @@ export function VideoCall({ roomId, user }) {
 
   const toggleCam = async () => {
     if (!roomId) {
-      console.log('❌ Cannot toggle camera - no room');
       return;
     }
     
     try {
       const newCamState = !camOn;
-      console.log('🎥 Toggling camera:', camOn, '->', newCamState);
       
       const videoTrack = stream?.getVideoTracks()?.[0];
       
       if (newCamState) {
         // Turning camera ON - acquire fresh video track (like Google Meet)
-        console.log('📹 Starting camera hardware...');
         
         // Stop old track if exists (cleanup)
         if (videoTrack) {
@@ -940,20 +875,16 @@ export function VideoCall({ roomId, user }) {
         peersRef.current.forEach(({ pc }) => {
           const sender = pc.getSenders().find(s => s.track?.kind === 'video');
           if (sender) {
-            console.log('📤 Replacing video track in peer connection');
             sender.replaceTrack(newVideo).catch(e => console.error('Failed to replace track:', e));
           } else {
-            console.log('� Adding video track to peer connection');
             pc.addTrack(newVideo, merged);
           }
         });
         
-        console.log('✅ Camera hardware started and sent to peers');
         
       } else {
         // Turning camera OFF - stop hardware and send disabled black track
         if (videoTrack) {
-          console.log('🛑 Stopping camera hardware...');
           
           // Create a black canvas track to replace the camera
           const canvas = document.createElement('canvas');
@@ -988,12 +919,10 @@ export function VideoCall({ roomId, user }) {
           peersRef.current.forEach(({ pc }) => {
             const sender = pc.getSenders().find(s => s.track?.kind === 'video');
             if (sender) {
-              console.log('📤 Replacing with disabled black track in peer connection');
               sender.replaceTrack(blackTrack).catch(e => console.error('Failed to replace track:', e));
             }
           });
           
-          console.log('✅ Camera hardware stopped, sending disabled track to peers');
         }
       }
       
@@ -1017,7 +946,6 @@ export function VideoCall({ roomId, user }) {
       const cameraTrack = stream?.getVideoTracks()?.[0];
       if (cameraTrack) {
         cameraTrack.enabled = true;
-        console.log('📹 Re-enabled camera track after screen share stop');
       }
     }
 
@@ -1026,12 +954,10 @@ export function VideoCall({ roomId, user }) {
       for (const [peerId, { pc }] of peersRef.current.entries()) {
         const sender = pc.getSenders().find(s => s.track?.id === currentScreenTrack.id);
         if (sender) {
-          console.log('📤 Removing screen share track from peer connection:', peerId);
           pc.removeTrack(sender);
           
           // Trigger renegotiation with embedded stop flag
           try {
-            console.log('🔄 Creating offer to remove screen...');
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socketRef.current?.emit('offer', { 
@@ -1040,7 +966,6 @@ export function VideoCall({ roomId, user }) {
               user,
               screenSharing: false  // Embed stop flag
             });
-            console.log('📤 Sent renegotiation offer with screenSharing=false to:', peerId);
           } catch (e) {
             console.error('Failed to renegotiate for screen share removal:', e);
           }
@@ -1059,14 +984,11 @@ export function VideoCall({ roomId, user }) {
       screenVideoRef.current.srcObject = null;
     }
     
-    console.log('✅ Screen share stopped and signaled via offers');
   };
 
   const toggleScreen = async () => {
     try {
       if (!screenOn) {
-        console.log('📺 Starting screen share...');
-        console.log('📺 Current peers count:', peersRef.current.size);
 
         // Get screen capture stream
         const scr = await navigator.mediaDevices.getDisplayMedia({ 
@@ -1079,13 +1001,6 @@ export function VideoCall({ roomId, user }) {
           audio: false 
         });
         
-        console.log('✅ Screen stream acquired:', scr.getTracks().map(t => ({
-          kind: t.kind,
-          label: t.label,
-          enabled: t.enabled,
-          readyState: t.readyState
-        })));
-        
         setScreenStream(scr);
         const screenTrack = scr.getVideoTracks()[0];
 
@@ -1094,16 +1009,13 @@ export function VideoCall({ roomId, user }) {
           const cameraTrack = stream?.getVideoTracks()?.[0];
           if (cameraTrack) {
             cameraTrack.enabled = false;
-            console.log('📹 Temporarily disabled camera track during screen share');
           }
         }
 
         // Set up local screen video element
         if (screenVideoRef.current) {
           screenVideoRef.current.srcObject = scr;
-          console.log('📺 Set local screen video srcObject');
           screenVideoRef.current.onloadedmetadata = () => {
-            console.log('✅ Screen share metadata loaded');
             screenVideoRef.current.play().catch(err => {
               console.error('Failed to play screen share:', err);
             });
@@ -1115,57 +1027,43 @@ export function VideoCall({ roomId, user }) {
 
         // Add screen track to all peers and renegotiate
         for (const [peerId, { pc }] of peersRef.current.entries()) {
-          console.log(`📤 Processing peer ${peerId} for screen share`);
-          console.log(`   Connection state:`, pc.connectionState);
-          console.log(`   Current senders:`, pc.getSenders().length);
           
           // Check if we already have a screen track sender
           const screenSender = pc.getSenders().find(s => s.track?.id === screenTrack.id);
           if (!screenSender) {
-            console.log('📤 Adding screen share track to peer connection for:', peerId);
             pc.addTrack(screenTrack, scr);
-            console.log('✅ Screen track added, new senders count:', pc.getSenders().length);
             
             // Trigger renegotiation
             try {
-              console.log('🔄 Creating offer for renegotiation...');
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
-              console.log('📤 Sending offer to peer:', peerId);
               socketRef.current?.emit('offer', { 
                 to: peerId, 
                 sdp: pc.localDescription, 
                 user,
                 screenSharing: true  // Embed start flag
               });
-              console.log('✅ Sent renegotiation offer with screenSharing=true to:', peerId);
             } catch (e) {
               console.error('Failed to renegotiate for screen share:', e);
             }
           } else {
-            console.log('⚠️ Screen sender already exists for peer:', peerId);
           }
         }
 
         // Send screen start signal to all peers after setup
         peersRef.current.forEach((_, peerId) => {
-          console.log('� Sending screen-share-start to peer:', peerId);
           socketRef.current?.emit('screen-share-start', { to: peerId, from: socketRef.current.id });
         });
         
-        console.log('✅ Screen share setup complete for all peers');
         
         // Handle when user stops sharing via browser UI
         screenTrack.onended = async () => {
-          console.log('📺 Screen share ended by user');
           await handleScreenStop(scr, screenTrack); // Call shared stop logic
         };
         
         setScreenOn(true);
-        console.log('✅ Screen share started and sent to peers');
         
       } else {
-        console.log('📺 Stopping screen share...');
         const screenTrack = screenStream?.getVideoTracks()?.[0];
         await handleScreenStop(screenStream, screenTrack);
       }
@@ -1535,14 +1433,6 @@ export function VideoCall({ roomId, user }) {
             ) : (
               remoteStreams.map(({ peerId, stream: remoteStream, user: remoteUser }) => {
                 const videoTracks = remoteStream?.getVideoTracks?.() || [];
-                console.log(`Remote peer ${peerId} has ${videoTracks.length} video track(s):`, 
-                  videoTracks.map(t => ({
-                    id: t.id,
-                    label: t.label,
-                    enabled: t.enabled,
-                    readyState: t.readyState
-                  }))
-                );
                 
                 const isScreenSharing = screenSharingPeers.has(peerId);
                 const hasScreenShare = isScreenSharing;
@@ -1552,19 +1442,16 @@ export function VideoCall({ roomId, user }) {
                 if (isScreenSharing && videoTracks.length > 1) {
                   // Screen is the last added track
                   displayVideoTrack = videoTracks[videoTracks.length - 1];
-                  console.log(`Using screen track for peer ${peerId}`);
                 } else {
                   // Use first track (camera) if enabled
                   displayVideoTrack = videoTracks[0];
                   if (displayVideoTrack && !displayVideoTrack.enabled) {
                     displayVideoTrack = null; // Hide if disabled
                   }
-                  console.log(`Using camera track for peer ${peerId}`);
                 }
                 
                 const hasVideo = !!displayVideoTrack;
                 
-                console.log(`Remote peer ${peerId}: isScreenSharing=${isScreenSharing}, hasVideo=${hasVideo}, hasScreenShare=${hasScreenShare}`);
                 
                 const remoteName = remoteUser?.name || remoteUser?.email || peerId;
                 const displayInitial = remoteName?.[0]?.toUpperCase() || 'U';
@@ -1594,7 +1481,6 @@ export function VideoCall({ roomId, user }) {
                           ref={(el) => {
                             if (!el) return;
                             if (el.srcObject !== displayStream) {
-                              console.log(`Setting srcObject for peer ${peerId}`);
                               el.srcObject = displayStream;
                             }
                           }}

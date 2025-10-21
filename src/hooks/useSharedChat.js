@@ -145,7 +145,6 @@ export function useSharedChat(roomId, user) {
       return
     }
 
-    console.log(`🔗 WebRTC: Connecting to room "${roomId}"`)
 
     // Clean up any existing provider/ydoc completely before creating new ones
     const cleanup = () => {
@@ -222,7 +221,6 @@ export function useSharedChat(roomId, user) {
           const hasBroadcast = peers.bcPeers && peers.bcPeers.size > 0
           const connected = hasWebRTC || hasBroadcast
           if (connected) {
-            console.log(`✅ WebRTC connected: ${peers.webrtcPeers?.size || 0} peers`)
           }
           setIsConnected(connected)
         })

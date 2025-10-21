@@ -1,26 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { Canvas, Rect, Circle, FabricText, PencilBrush } from "fabric";
-import * as Y from "yjs";
-import { WebrtcProvider } from "y-webrtc";
+import io from "socket.io-client";
+
 
 export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBackToLauncher }) {
   const canvasRef = useRef(null);
   const fabricCanvasRef = useRef(null);
   const [viewRoom, setViewRoom] = useState(roomId);
-  const [collaborationProvider, setCollaborationProvider] = useState(null);
-  const ydocRef = useRef(null);
-  const providerRef = useRef(null);
+  const socketRef = useRef(null);
+  const isLocalChange = useRef(false);
+  const canvasListenersAttached = useRef(false);
   
   // Drawing tools state
   const [currentTool, setCurrentTool] = useState('pen');
   const [currentColor, setCurrentColor] = useState('#000000');
   const [brushSize, setBrushSize] = useState(5);
+  const [isErasing, setIsErasing] = useState(false);
   const [canvasBounds, setCanvasBounds] = useState({ width: 3000, height: 2000 });
   const [minCanvasSize, setMinCanvasSize] = useState({ width: 3000, height: 2000 });
   const [scrollPosition, setScrollPosition] = useState({ x: 0, y: 0 });
   const scrollContainerRef = useRef(null);
   
+  // Text input modal state
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [textInputValue, setTextInputValue] = useState('');
+  const textInputRef = useRef(null);
+  
   const displayName = user?.name || user?.email || "Anonymous User";
+
 
   // Redirect to launcher if no session is selected
   useEffect(() => {
@@ -29,99 +36,228 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
     }
   }, [viewRoom, onBackToLauncher]);
 
-  // Initialize Yjs collaboration when room changes
+
+  // Initialize Socket.IO collaboration when room changes
   useEffect(() => {
-    if (!viewRoom) return;
+    if (!viewRoom || !user) return;
 
-    // Clean up previous collaboration
-    if (providerRef.current) {
-      providerRef.current.destroy();
-    }
 
-    // Create new Yjs document and WebRTC provider for real-time collaboration
-    const ydoc = new Y.Doc();
-    
-    // Y-WebRTC provider with local network discovery (no external signaling)
-    const provider = new WebrtcProvider(`whiteboard-${viewRoom}`, ydoc, {
-      // Disable signaling servers - use local broadcast and WebRTC only
-      signaling: [],
-      // Add connection options
-      maxConns: 20 + Math.floor(Math.random() * 15),
-      filterBcConns: false,
-      // Add STUN servers for WebRTC NAT traversal
-      peerOpts: {
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-          ]
-        }
+    // Connect to Socket.IO server
+    const socket = io('http://localhost:8000', {
+      path: '/socket.io/',
+      transports: ['polling', 'websocket'], // Try polling first, then upgrade to websocket
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
+      timeout: 10000
+    });
+
+    socketRef.current = socket;
+
+    // Listen for initial whiteboard state
+    socket.on('whiteboard-state', (canvasState) => {
+      if (fabricCanvasRef.current && canvasState) {
+        isLocalChange.current = true;
+        
+        fabricCanvasRef.current.loadFromJSON(canvasState, () => {
+          fabricCanvasRef.current.renderAll();
+          
+          setTimeout(() => {
+            isLocalChange.current = false;
+          }, 100);
+        });
+      } else {
+        isLocalChange.current = false;
       }
     });
 
-    // Handle connection status
-    provider.on('status', ({ status }) => {
-      console.log('Whiteboard collaboration status:', status);
+    // Listen for remote object additions
+    socket.on('canvas-object-added', ({ canvasJSON }) => {
+      if (fabricCanvasRef.current && !isLocalChange.current) {
+        isLocalChange.current = true;
+        
+        fabricCanvasRef.current.loadFromJSON(canvasJSON, () => {
+          fabricCanvasRef.current.renderAll();
+          
+          setTimeout(() => { isLocalChange.current = false; }, 50);
+        });
+      }
     });
 
-    // Handle connection errors
-    provider.on('connection-error', (error) => {
-      console.error('Whiteboard collaboration connection error:', error);
+    // Listen for remote object modifications
+    socket.on('canvas-object-modified', ({ canvasJSON }) => {
+      if (fabricCanvasRef.current && !isLocalChange.current) {
+        isLocalChange.current = true;
+        
+        fabricCanvasRef.current.loadFromJSON(canvasJSON, () => {
+          fabricCanvasRef.current.renderAll();
+          
+          setTimeout(() => { isLocalChange.current = false; }, 50);
+        });
+      }
     });
 
-    ydocRef.current = ydoc;
-    providerRef.current = provider;
-    setCollaborationProvider(provider);
+    // Listen for remote object removals
+    socket.on('canvas-object-removed', ({ canvasJSON }) => {
+      if (fabricCanvasRef.current && !isLocalChange.current) {
+        isLocalChange.current = true;
+        
+        fabricCanvasRef.current.loadFromJSON(canvasJSON, () => {
+          fabricCanvasRef.current.renderAll();
+          
+          setTimeout(() => { isLocalChange.current = false; }, 50);
+        });
+      }
+    });
+
+    // Listen for remote path creation (freehand drawing)
+    socket.on('canvas-path-created', ({ canvasJSON }) => {
+      if (fabricCanvasRef.current && !isLocalChange.current) {
+        isLocalChange.current = true;
+        
+        fabricCanvasRef.current.loadFromJSON(canvasJSON, () => {
+          fabricCanvasRef.current.renderAll();
+          
+          setTimeout(() => { isLocalChange.current = false; }, 50);
+        });
+      }
+    });
+
+    // Listen for canvas cleared
+    socket.on('canvas-cleared', () => {
+      if (fabricCanvasRef.current) {
+        isLocalChange.current = true;
+        fabricCanvasRef.current.clear();
+        fabricCanvasRef.current.backgroundColor = '#ffffff';
+        fabricCanvasRef.current.renderAll();
+        setTimeout(() => { isLocalChange.current = false; }, 50);
+      }
+    });
+
+    // Listen for full canvas sync
+    socket.on('canvas-sync', ({ canvasJSON }) => {
+      if (fabricCanvasRef.current) {
+        isLocalChange.current = true;
+        fabricCanvasRef.current.loadFromJSON(canvasJSON, () => {
+          fabricCanvasRef.current.renderAll();
+          setTimeout(() => { isLocalChange.current = false; }, 50);
+        });
+      }
+    });
+
+    // Handle connection events
+    socket.on('connect', () => {
+      // Join room after connection
+      socket.emit('join-whiteboard', {
+        roomId: viewRoom,
+        userId: user.id || user.email,
+        userName: user.name || user.email
+      });
+      
+      // Attach canvas listeners if canvas exists and not already attached
+      if (fabricCanvasRef.current && !canvasListenersAttached.current) {
+        attachCanvasListeners(fabricCanvasRef.current);
+      }
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('❌ Whiteboard connection error:', error.message);
+    });
+
+    socket.on('disconnect', (reason) => {
+    });
+
+    socket.on('user-joined-whiteboard', ({ userName }) => {
+    });
+
+    socket.on('user-left-whiteboard', ({ userName }) => {
+    });
 
     return () => {
-      if (provider) {
-        provider.destroy();
+      if (socket) {
+        socket.removeAllListeners();
+        socket.disconnect();
+        socketRef.current = null;
       }
     };
-  }, [viewRoom]);
+  }, [viewRoom, user]);
 
-  // Initialize Fabric.js canvas
+
+  // Function to attach canvas event listeners
+  const attachCanvasListeners = (canvas) => {
+    if (canvasListenersAttached.current) {
+      return;
+    }
+    
+    
+    canvas.on('object:added', (e) => {
+      if (!isLocalChange.current && socketRef.current && socketRef.current.connected) {
+        const canvasJSON = canvas.toJSON();
+        socketRef.current.emit('canvas-object-added', { canvasJSON });
+      } else {
+      }
+    });
+
+    canvas.on('object:modified', (e) => {
+      if (!isLocalChange.current && socketRef.current && socketRef.current.connected) {
+        const canvasJSON = canvas.toJSON();
+        socketRef.current.emit('canvas-object-modified', { canvasJSON });
+      } else {
+      }
+    });
+
+    canvas.on('object:removed', (e) => {
+      if (!isLocalChange.current && socketRef.current && socketRef.current.connected) {
+        const canvasJSON = canvas.toJSON();
+        socketRef.current.emit('canvas-object-removed', { canvasJSON });
+      } else {
+      }
+    });
+
+    canvas.on('path:created', (e) => {
+      if (!isLocalChange.current && socketRef.current && socketRef.current.connected) {
+        const canvasJSON = canvas.toJSON();
+        socketRef.current.emit('canvas-path-created', { canvasJSON });
+      }
+    });
+    
+    canvasListenersAttached.current = true;
+  };
+
+  // Initialize Fabric.js canvas (only once per room)
   useEffect(() => {
     if (!canvasRef.current) return;
+
 
     // Calculate initial canvas size (larger than container to allow scrolling)
     const container = canvasRef.current.parentElement;
     const initialWidth = Math.max(container.clientWidth, canvasBounds.width);
     const initialHeight = Math.max(container.clientHeight, canvasBounds.height);
 
+
     const canvas = new Canvas(canvasRef.current, {
       width: initialWidth,
       height: initialHeight,
       backgroundColor: '#ffffff',
-      selection: currentTool === 'select',
-      isDrawingMode: currentTool === 'pen',
+      selection: false,
+      isDrawingMode: false,
     });
+
 
     fabricCanvasRef.current = canvas;
 
-    // Configure drawing brush
-    canvas.isDrawingMode = currentTool === 'pen';
-    
-    const brush = new PencilBrush(canvas);
-    brush.width = brushSize;
-    brush.color = currentColor;
-    canvas.freeDrawingBrush = brush;
-
-    // Function to expand canvas - DISABLED to prevent repositioning
-    const expandCanvasIfNeeded = () => {
-      // Expansion disabled to prevent object repositioning
-      return;
-    };
-
-    // Event listeners for expansion - DISABLED to prevent repositioning
-    // canvas.on('path:created', expandCanvasIfNeeded);
-    // canvas.on('object:added', expandCanvasIfNeeded);
-    // canvas.on('object:modified', expandCanvasIfNeeded);
+    // Add event listeners for collaboration (will be properly attached when socket connects)
+    if (socketRef.current && socketRef.current.connected) {
+      attachCanvasListeners(canvas);
+    } else {
+    }
 
     canvas.renderAll();
 
+
     // Handle container resize (but maintain larger canvas)
     const handleResize = () => {
+      if (!canvasRef.current) return;
       const container = canvasRef.current.parentElement;
       const newMinWidth = Math.max(container.clientWidth, minCanvasSize.width);
       const newMinHeight = Math.max(container.clientHeight, minCanvasSize.height);
@@ -135,18 +271,31 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
       }
     };
 
+
     window.addEventListener('resize', handleResize);
+
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      canvasListenersAttached.current = false;
       canvas.dispose();
     };
-  }, [viewRoom, canvasBounds.width, canvasBounds.height, minCanvasSize]);
+  }, [viewRoom]); // Only recreate canvas when room changes
+
+
+  // Auto-focus text input when modal opens
+  useEffect(() => {
+    if (showTextInput && textInputRef.current) {
+      textInputRef.current.focus();
+    }
+  }, [showTextInput]);
+
 
   // Scroll functionality
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+
 
     const handleScroll = () => {
       setScrollPosition({
@@ -155,9 +304,11 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
       });
     };
 
+
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
+
 
   // Manual canvas expansion function - Minimal approach to prevent repositioning
   const expandCanvasManually = () => {
@@ -176,109 +327,82 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
     setCanvasBounds({ width: newWidth, height: newHeight });
   };
 
-  // Removed canvas panning functions to prevent repositioning
-  
-  // Smooth scroll functions (keeping for container scrolling compatibility)
-  const scrollToCenter = () => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
 
-    const centerX = (canvasBounds.width - container.clientWidth) / 2;
-    const centerY = (canvasBounds.height - container.clientHeight) / 2;
-
-    container.scrollTo({
-      left: Math.max(0, centerX),
-      top: Math.max(0, centerY),
-      behavior: 'smooth'
-    });
-  };
-
-  const scrollToFitContent = () => {
+  // Handle color change - update selected objects
+  const handleColorChange = (newColor) => {
+    setCurrentColor(newColor);
+    
     if (!fabricCanvasRef.current) return;
-
+    
     const canvas = fabricCanvasRef.current;
-    const objects = canvas.getObjects();
+    const activeObject = canvas.getActiveObject();
     
-    if (objects.length === 0) {
-      // No objects to fit - do nothing to preserve current position
-      return;
+    if (activeObject) {
+      // Check if it's a group selection (multiple objects)
+      if (activeObject.type === 'activeSelection') {
+        activeObject.forEachObject((obj) => {
+          updateObjectColor(obj, newColor);
+        });
+      } else {
+        // Single object selected
+        updateObjectColor(activeObject, newColor);
+      }
+      
+      canvas.renderAll();
     }
-
-    // Calculate bounding box of all objects
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    
-    objects.forEach(obj => {
-      const bounds = obj.getBoundingRect();
-      minX = Math.min(minX, bounds.left);
-      minY = Math.min(minY, bounds.top);
-      maxX = Math.max(maxX, bounds.left + bounds.width);
-      maxY = Math.max(maxY, bounds.top + bounds.height);
-    });
-
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    // Center the content with some padding
-    const padding = 50;
-    const contentWidth = maxX - minX;
-    const contentHeight = maxY - minY;
-    
-    const scrollX = Math.max(0, minX - padding - (container.clientWidth - contentWidth) / 2);
-    const scrollY = Math.max(0, minY - padding - (container.clientHeight - contentHeight) / 2);
-
-    container.scrollTo({
-      left: scrollX,
-      top: scrollY,
-      behavior: 'smooth'
-    });
   };
 
-  const scrollByAmount = (deltaX, deltaY) => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
 
-    container.scrollBy({
-      left: deltaX,
-      top: deltaY,
-      behavior: 'smooth'
-    });
+  // Helper function to update object color based on type
+  const updateObjectColor = (obj, color) => {
+    if (obj.type === 'text' || obj.type === 'i-text' || obj.type === 'textbox') {
+      // For text objects, change fill color
+      obj.set('fill', color);
+    } else if (obj.type === 'path') {
+      // For drawn paths (freehand drawing), change stroke color
+      obj.set('stroke', color);
+    } else {
+      // For shapes (rectangle, circle), change stroke color
+      obj.set('stroke', color);
+    }
   };
+
 
   // Update canvas tool settings
   useEffect(() => {
     if (!fabricCanvasRef.current) return;
 
+
     const canvas = fabricCanvasRef.current;
     
-    // Set drawing mode first
-    canvas.isDrawingMode = currentTool === 'pen';
+    // Set drawing mode based on tool
+    canvas.isDrawingMode = currentTool === 'pen' || currentTool === 'eraser';
     canvas.selection = currentTool === 'select';
+
 
     // Configure brush properties when in drawing mode
     if (currentTool === 'pen') {
-      // Explicitly recreate the brush with current settings
       const brush = new PencilBrush(canvas);
       brush.width = brushSize;
       brush.color = currentColor;
       canvas.freeDrawingBrush = brush;
+    } else if (currentTool === 'eraser') {
+      // Eraser uses white color to "erase"
+      const eraserBrush = new PencilBrush(canvas);
+      eraserBrush.width = brushSize * 2; // Make eraser bigger
+      eraserBrush.color = '#ffffff'; // White color to erase
+      canvas.freeDrawingBrush = eraserBrush;
     }
     
     // Force canvas update
     canvas.renderAll();
   }, [currentTool, currentColor, brushSize]);
 
-  // Clean up on unmount
-  useEffect(() => {
-    return () => {
-      if (providerRef.current) {
-        providerRef.current.destroy();
-      }
-    };
-  }, []);
 
   useEffect(() => {
     setViewRoom(roomId);
   }, [roomId]);
+
 
   // Tool functions
   const addRectangle = () => {
@@ -297,6 +421,7 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
     fabricCanvasRef.current.add(rect);
   };
 
+
   const addCircle = () => {
     if (!fabricCanvasRef.current) return;
     
@@ -312,10 +437,24 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
     fabricCanvasRef.current.add(circle);
   };
 
+
+  // Show text input modal
   const addText = () => {
-    if (!fabricCanvasRef.current) return;
+    setTextInputValue('');
+    setShowTextInput(true);
+  };
+
+
+  // Handle text submission
+  const handleTextSubmit = () => {
+    if (!fabricCanvasRef.current || !textInputValue.trim()) {
+      setShowTextInput(false);
+      return;
+    }
     
-    const text = new FabricText('Click to edit', {
+    const canvas = fabricCanvasRef.current;
+    
+    const text = new FabricText(textInputValue, {
       left: 100,
       top: 100,
       fontFamily: 'Arial',
@@ -324,15 +463,42 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
       editable: true,
     });
     
-    fabricCanvasRef.current.add(text);
+    canvas.add(text);
+    canvas.renderAll();
+    
+    // Close modal and reset
+    setShowTextInput(false);
+    setTextInputValue('');
   };
+
+
+  // Handle Enter key in text input
+  const handleTextKeyPress = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleTextSubmit();
+    } else if (e.key === 'Escape') {
+      setShowTextInput(false);
+      setTextInputValue('');
+    }
+  };
+
 
   const clearCanvas = () => {
     if (!fabricCanvasRef.current) return;
+    
+    isLocalChange.current = true;
     fabricCanvasRef.current.clear();
     fabricCanvasRef.current.backgroundColor = '#ffffff';
     fabricCanvasRef.current.renderAll();
+    isLocalChange.current = false;
+    
+    // Emit clear event to other users
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('canvas-cleared');
+    }
   };
+
 
   return (
     <div className="h-full w-full bg-gray-50 rounded-2xl overflow-hidden flex flex-col" style={{ minHeight: '700px' }}>
@@ -384,6 +550,17 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
                   </button>
                   
                   <button
+                    onClick={() => setCurrentTool('eraser')}
+                    className={`px-2 sm:px-3 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                      currentTool === 'eraser' 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Eraser
+                  </button>
+                  
+                  <button
                     onClick={addRectangle}
                     className="px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg text-xs sm:text-sm font-medium transition-colors"
                   >
@@ -411,7 +588,7 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
                     <input
                       type="color"
                       value={currentColor}
-                      onChange={(e) => setCurrentColor(e.target.value)}
+                      onChange={(e) => handleColorChange(e.target.value)}
                       className="w-6 h-6 sm:w-8 sm:h-8 rounded border border-gray-300 cursor-pointer"
                     />
                   </div>
@@ -428,56 +605,6 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
                       className="w-12 sm:w-20"
                     />
                     <span className="text-xs sm:text-sm text-gray-600 w-4 sm:w-6">{brushSize}</span>
-                  </div>
-                  
-                  {/* Canvas Pan Controls - Disabled to prevent repositioning */}
-                  <div className="flex items-center space-x-1 border-l border-gray-300 pl-2">
-                    <button
-                      onClick={() => {}} // Function removed to prevent repositioning
-                      className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 transition-colors"
-                      title="Reset View"
-                    >
-                      �
-                    </button>
-                    <button
-                      onClick={() => {}} // Function removed to prevent repositioning
-                      className="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 transition-colors"
-                      title="Center Content"
-                    >
-                      🎯
-                    </button>
-                    <div className="flex flex-col space-y-0.5">
-                      <button
-                        onClick={() => {}} // Panning disabled to prevent repositioning
-                        className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
-                        title="Pan Up"
-                      >
-                        ⬆️
-                      </button>
-                      <div className="flex space-x-0.5">
-                        <button
-                          onClick={() => {}} // Panning disabled to prevent repositioning
-                          className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
-                          title="Pan Left"
-                        >
-                          ⬅️
-                        </button>
-                        <button
-                          onClick={() => {}} // Panning disabled to prevent repositioning
-                          className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
-                          title="Pan Right"
-                        >
-                          ➡️
-                        </button>
-                      </div>
-                      <button
-                        onClick={() => {}} // Panning disabled to prevent repositioning
-                        className="px-1.5 py-0.5 bg-gray-500 text-white rounded text-xs hover:bg-gray-600 transition-colors"
-                        title="Pan Down"
-                      >
-                        ⬇️
-                      </button>
-                    </div>
                   </div>
                   
                   {/* Expand Canvas Button */}
@@ -528,8 +655,46 @@ export function Whiteboard({ roomId, user, mySessions = [], onJoinSession, onBac
         </div>
       </div>
 
+
+      {/* Text Input Modal */}
+      {showTextInput && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowTextInput(false)}>
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Add Text to Canvas</h3>
+            <textarea
+              ref={textInputRef}
+              value={textInputValue}
+              onChange={(e) => setTextInputValue(e.target.value)}
+              onKeyDown={handleTextKeyPress}
+              placeholder="Type your text here..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              rows="4"
+            />
+            <div className="mt-4 flex justify-end space-x-3">
+              <button
+                onClick={() => {
+                  setShowTextInput(false);
+                  setTextInputValue('');
+                }}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTextSubmit}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+              >
+                Add Text
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-3">Press Enter to add, Shift+Enter for new line, Esc to cancel</p>
+          </div>
+        </div>
+      )}
+
+
       {/* Canvas Area */}
-      <div className="flex-1 relative bg-white overflow-auto">
+      <div ref={scrollContainerRef} className="flex-1 relative bg-white overflow-auto">
         {viewRoom ? (
           <div className="min-w-full min-h-full relative" style={{ width: canvasBounds.width, height: canvasBounds.height }}>
             <canvas

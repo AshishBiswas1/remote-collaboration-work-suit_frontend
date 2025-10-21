@@ -25,7 +25,6 @@ export function useRealTimeChat(roomId, user) {
 
     try {
       setConnectionStatus('connecting')
-      console.log('🔌 Initializing Socket.IO connection to:', SOCKET_URL)
 
       // Create Socket.IO connection with optimal settings
       const socket = io(SOCKET_URL, {
@@ -44,7 +43,6 @@ export function useRealTimeChat(roomId, user) {
 
       // Connection event handlers
       socket.on('connect', () => {
-        console.log('✅ Socket.IO connected:', socket.id)
         setIsConnected(true)
         setConnectionStatus('connected')
         setConnectionMethod('socket.io')
@@ -62,7 +60,6 @@ export function useRealTimeChat(roomId, user) {
       })
 
       socket.on('disconnect', (reason) => {
-        console.log('❌ Socket.IO disconnected:', reason)
         setIsConnected(false)
         setConnectionStatus('disconnected')
         setOnlineUsers(new Set())

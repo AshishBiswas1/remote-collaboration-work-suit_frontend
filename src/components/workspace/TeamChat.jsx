@@ -21,7 +21,6 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
   useEffect(() => {
     if (!viewRoom || !user) return;
 
-    console.log('🔌 Connecting to Socket.IO:', SOCKET_URL);
     
     // Create socket connection - start with polling to avoid WebSocket frame header errors
     const socket = io(SOCKET_URL, {
@@ -36,7 +35,6 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
 
     // Connection events
     socket.on('connect', () => {
-      console.log('✅ Socket.IO connected:', socket.id);
       setIsConnected(true);
       
       // Join the room
@@ -51,7 +49,6 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
     });
 
     socket.on('disconnect', () => {
-      console.log('❌ Socket.IO disconnected');
       setIsConnected(false);
       setOnlineUsers([]);
     });
@@ -63,7 +60,6 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
 
     // Message events
     socket.on('room-state', (data) => {
-      console.log('📦 Received room state:', data);
       if (data.messages) {
         const formattedMessages = data.messages.map(msg => ({
           id: msg.id || Date.now(),
@@ -79,7 +75,6 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
     });
 
     socket.on('new-message', (messageData) => {
-      console.log('💬 New message received:', messageData);
       const newMsg = {
         id: messageData.id || Date.now(),
         user: messageData.user?.name || messageData.user || 'Unknown',
@@ -90,14 +85,12 @@ export function TeamChat({ roomId, user, mySessions = [], onJoinSession, onBackT
     });
 
     socket.on('user-joined', (data) => {
-      console.log('👋 User joined:', data);
       if (data.onlineUsers) {
         setOnlineUsers(data.onlineUsers);
       }
     });
 
     socket.on('user-left', (data) => {
-      console.log('👋 User left:', data);
       if (data.onlineUsers) {
         setOnlineUsers(data.onlineUsers);
       }

@@ -25,10 +25,8 @@ const providerInstances = new Map();
 // Get or create a shared Y.Doc for a specific room
 const getYDoc = (roomId) => {
   if (!yDocInstances.has(roomId)) {
-    console.log('📄 Creating new Y.Doc for room:', roomId);
     yDocInstances.set(roomId, new Y.Doc());
   } else {
-    console.log('📄 Reusing existing Y.Doc for room:', roomId);
   }
   return yDocInstances.get(roomId);
 };
@@ -38,13 +36,6 @@ const getProvider = (roomId, yDoc) => {
   const providerKey = `doc-room-${roomId}`;
   
   if (!providerInstances.has(providerKey)) {
-    console.log('🌐 Creating new WebSocket provider for room:', providerKey);
-    console.log('🔧 Provider configuration:', {
-      room: providerKey,
-      serverUrl: 'ws://localhost:1234',
-      note: 'Connect to local WebSocket server for cross-network collaboration'
-    });
-    
     // Create provider - let it create its own Awareness instance
     const provider = new WebsocketProvider(
       'ws://localhost:1234',  // Local WebSocket server
@@ -58,20 +49,16 @@ const getProvider = (roomId, yDoc) => {
     if (typeof window !== 'undefined') {
       window.__yProvider = provider;
       window.__yDoc = yDoc;
-      console.log('💡 Debug: Access provider via window.__yProvider in console');
     }
     
     // Enhanced logging for connection debugging
     provider.on('status', ({ status }) => {
-      console.log('🔌 WebSocket Provider status:', status);
     });
     
     provider.on('sync', (isSynced) => {
-      console.log('🔄 Document synced with server:', isSynced);
     });
     
     provider.on('connection-close', (event) => {
-      console.log('⚠️ WebSocket connection closed:', event);
     });
     
     provider.on('connection-error', (error) => {
@@ -79,7 +66,6 @@ const getProvider = (roomId, yDoc) => {
     });
     
   } else {
-    console.log('🌐 Reusing existing WebSocket provider for room:', providerKey);
   }
   
   return providerInstances.get(providerKey);
@@ -159,11 +145,8 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     // CRITICAL FIX: Check if already initialized to prevent duplicate toolbars
     // This check survives StrictMode remounts
     if (initializedEditors.has(editorKey)) {
-      console.log('Editor already initialized, skipping duplicate initialization...');
-      
       // If we have a ref but Quill is disabled, re-enable it
       if (quillRef.current && !quillRef.current.isEnabled()) {
-        console.log('Re-enabling existing Quill instance...');
         quillRef.current.enable();
       }
       
@@ -182,9 +165,6 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     // Extract stable user info to avoid dependency issues
     const userName = user?.name || user?.email || 'Anonymous';
     const userId = user?.id || `anon_${Date.now()}`;
-    
-    console.log('Initializing Quill editor for room:', roomId);
-    
     // Initialize Quill editor only once
     const quill = new Quill(editorRef.current, {
       theme: 'snow',
@@ -219,39 +199,23 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     providerRef.current = provider; // Store provider reference
     
     // Log provider configuration
-    console.log('Provider config:', {
-      room: `doc-room-${roomId}`,
-      maxConns: provider.maxConns,
-      filterBcConns: provider.filterBcConns,
-      awareness: !!provider.awareness,
-      doc: !!provider.doc
-    });
-    
     const yText = yDoc.getText("quill");
     const awareness = provider.awareness;
     
     // Generate a random color for this user
     const userColor = '#' + Math.floor(Math.random()*16777215).toString(16);
-    
-    console.log('👤 Setting local user:', userName, 'with color:', userColor);
-    
     // Set local user information
     awareness.setLocalStateField('user', {
       name: userName,
       color: userColor,
       id: userId
     });
-
-    console.log('🔗 Binding Y.js to Quill...');
-    
     // Bind Y.js to Quill - this handles real-time sync
     const binding = new QuillBinding(yText, quill, awareness);
 
     // Update collaborators list when awareness changes
     const updateCollaborators = () => {
       const states = Array.from(awareness.getStates().entries());
-      console.log('📊 Awareness states:', states.length, 'total clients');
-      
       const collabs = states
         .filter(([clientId]) => clientId !== awareness.clientID) // Exclude self
         .map(([clientId, state]) => ({
@@ -267,12 +231,9 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
         const existingCursor = cursors.cursors().find(c => c.id === cursorId);
         
         if (!existingCursor) {
-          console.log('✨ Creating cursor for:', collab.name, 'with color:', collab.color);
           cursors.createCursor(cursorId, collab.name, collab.color);
         }
       });
-      
-      console.log('👥 Collaborators updated:', collabs.length, 'remote users');
     };
 
     // Track typing users
@@ -317,7 +278,6 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     // Only attach these event listeners once per component (not per provider)
     // These are component-specific handlers
     const statusHandler = ({ status }) => {
-      console.log('🔌 WebSocket connection status:', status);
     };
 
     const errorHandler = (error) => {
@@ -325,7 +285,6 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     };
     
     const syncHandler = (isSynced) => {
-      console.log('✅ Document synced with server:', isSynced);
       // Trigger collaborator update when synced
       updateCollaborators();
     };
@@ -336,7 +295,6 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
     provider.on('sync', syncHandler);  // WebSocket uses 'sync' not 'synced'
 
     return () => {
-      console.log('🧹 Cleaning up editor...');
       const editorKey = `editor-${roomId}`;
       
       clearTimeout(typingTimeout);
@@ -351,8 +309,6 @@ export function DocEditor({ roomId, user, mySessions = [], onJoinSession, onBack
       setTimeout(() => {
         // Check if component was re-mounted (isInitializedRef will be true again)
         if (!isInitializedRef.current) {
-          console.log('✅ Component truly unmounted, cleaning up completely');
-          
           // Remove provider event listeners
           if (provider) {
             provider.off('status', statusHandler);

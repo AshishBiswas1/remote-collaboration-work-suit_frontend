@@ -157,7 +157,6 @@ export function Workspace() {
         setToast("Session created successfully. Copy the share link from header.");
       }
       
-      console.log('Session created:', session);
       
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -475,7 +474,7 @@ export function Workspace() {
                             <button
                               onClick={handleDeleteSelected}
                               disabled={selectedSessions.size === 0}
-                              className="btn btn-danger py-1 px-2 sm:px-3 text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                              className="px-2 sm:px-4 py-1 sm:py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg shadow-sm transition-all duration-200 text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-red-600 whitespace-nowrap"
                             >
                               <span className="hidden sm:inline">Delete Selected ({selectedSessions.size})</span>
                               <span className="sm:hidden">Delete ({selectedSessions.size})</span>

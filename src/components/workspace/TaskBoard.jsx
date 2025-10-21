@@ -129,11 +129,9 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
     });
 
     socket.on("task-removed", ({ columnId, taskId }) => {
-      console.log(`🗑️ Received task-removed event: taskId=${taskId}, columnId=${columnId}`);
       setBoard(prev => {
         const column = prev.find(col => col.id === columnId);
         const taskExists = column?.items.some(item => item.id === taskId);
-        console.log(`📋 Task exists in local state: ${taskExists}`);
         
         const newBoard = prev.map(col => 
           col.id === columnId 
@@ -141,7 +139,6 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
             : col
         );
         saveJSON(tasksKey(userId, viewRoom), newBoard);
-        console.log(`✅ Task removed from local state`);
         return newBoard;
       });
     });
@@ -207,14 +204,11 @@ export function TaskBoard({ roomId, user, mySessions = [], onJoinSession, onBack
   const removeCard = (colId, cardId) => {
     if (!viewRoom) return;
 
-    console.log(`🗑️ removeCard called: columnId=${colId}, taskId=${cardId}`);
 
     // Send to server - server will broadcast to ALL users (including sender)
     if (socketRef.current && isConnected) {
-      console.log(`📤 Emitting remove-task to server`);
       socketRef.current.emit("remove-task", { columnId: colId, taskId: cardId });
     } else {
-      console.log(`⚠️ Not connected to Socket.IO, updating locally`);
       // Fallback to local update if offline
       setBoard((prev) =>
         prev.map((c) =>
