@@ -100,6 +100,7 @@ export function VideoCall({ roomId, user }) {
   const [screenSharingPeers, setScreenSharingPeers] = useState(new Set());
   const [handRaised, setHandRaised] = useState(false);
   const [mediaAccessGranted, setMediaAccessGranted] = useState(false);
+  const [useLowQuality, setUseLowQuality] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
 
   // Chat state - using Socket.IO for real-time sync
@@ -117,18 +118,20 @@ export function VideoCall({ roomId, user }) {
   const onlineUsers = chatConnected ? new Set(chatOnlineUsers.map(u => `${u.id}:${u.name}`)) : fallbackOnlineUsers;
   const isConnected = chatConnected || fallbackConnected;
 
-  // Check media permissions
+  // Check media permissions and provide guidance
   const checkMediaPermissions = async () => {
     try {
       if (!navigator.permissions) {
+        console.warn('Permissions API not supported');
         return { camera: 'unknown', microphone: 'unknown' };
       }
-      
+
       const [cameraPermission, micPermission] = await Promise.all([
-        navigator.permissions.query({ name: 'camera' }),
-        navigator.permissions.query({ name: 'microphone' })
+        navigator.permissions.query({ name: 'camera' }).catch(() => ({ state: 'unknown' })),
+        navigator.permissions.query({ name: 'microphone' }).catch(() => ({ state: 'unknown' }))
       ]);
-      
+
+      console.log('Media permissions:', { camera: cameraPermission.state, microphone: micPermission.state });
       return {
         camera: cameraPermission.state,
         microphone: micPermission.state
@@ -139,81 +142,56 @@ export function VideoCall({ roomId, user }) {
     }
   };
 
-  // Retry media access
-  const retryMediaAccess = () => {
-    // Clear current stream
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(stopTrack);
-      localStreamRef.current = null;
-    }
-    setStream(null);
-    setError("");
-    setMediaAccessGranted(false);
-    
-    // Re-initialize media
-    const initializeMedia = async () => {
-      setError("");
-      
-      // Check if we're on HTTPS (required for WebRTC)
-      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        setError("Camera/microphone access requires HTTPS. Please ensure you're accessing the site over a secure connection.");
-        return;
-      }
-      
-      // Check if getUserMedia is supported
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError("Your browser doesn't support camera/microphone access. Please update to a modern browser.");
-        return;
-      }
-      
-      try {
-        // Always request both audio and video initially
-        const media = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: { width: 1280, height: 720 },
-        });
-        
-        setStream(media);
-        localStreamRef.current = media;
-        setMediaAccessGranted(true);
-        
-        // Set up video element
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = media;
-          await localVideoRef.current.play().catch(() => {});
-        }
-        
-      } catch (e) {
-        console.error('❌ Failed to initialize media:', e);
-        let errorMessage = "Could not access camera/microphone";
-        let helpText = "";
-        
-        if (e.name === 'NotAllowedError') {
-          errorMessage = "Camera/microphone access denied";
-          helpText = "Please click 'Allow' when your browser asks for camera/microphone permissions, or check your browser settings to enable access for this site.";
-        } else if (e.name === 'NotFoundError') {
-          errorMessage = "No camera/microphone found";
-          helpText = "Please ensure your camera and microphone are connected and not being used by another application.";
-        } else if (e.name === 'OverconstrainedError') {
-          errorMessage = "Camera/microphone constraints cannot be satisfied";
-          helpText = "Your camera/microphone may not support the required resolution. Try refreshing the page.";
-        } else if (e.name === 'NotReadableError') {
-          errorMessage = "Camera/microphone is already in use";
-          helpText = "Please close other applications that might be using your camera/microphone and try again.";
-        } else if (e.name === 'AbortError') {
-          errorMessage = "Camera/microphone access was interrupted";
-          helpText = "The request was interrupted. Please try again.";
-        } else if (e.name === 'SecurityError') {
-          errorMessage = "Camera/microphone access blocked by security settings";
-          helpText = "This site must be served over HTTPS for camera/microphone access. Please ensure you're using a secure connection.";
-        }
-        
-        setError(`${errorMessage}. ${helpText}`);
-      }
-    };
+  // Get user media with fallback strategy
+  const getUserMediaWithFallback = async (constraints) => {
+    console.log('Attempting to get user media with constraints:', constraints);
 
-    initializeMedia();
+    try {
+      // First try with full constraints
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('✅ Successfully obtained media stream');
+      return stream;
+    } catch (error) {
+      console.error('❌ Initial getUserMedia failed:', error.name, error.message);
+
+      // Fallback strategy: try audio and video separately
+      if (constraints.audio && constraints.video) {
+        console.log('🔄 Trying fallback: audio and video separately');
+
+        try {
+          const [audioStream, videoStream] = await Promise.all([
+            navigator.mediaDevices.getUserMedia({ audio: constraints.audio, video: false })
+              .catch(e => { console.warn('Audio fallback failed:', e); return null; }),
+            navigator.mediaDevices.getUserMedia({ audio: false, video: constraints.video })
+              .catch(e => { console.warn('Video fallback failed:', e); return null; })
+          ]);
+
+          if (audioStream && videoStream) {
+            // Combine streams
+            const combined = new MediaStream([
+              ...audioStream.getAudioTracks(),
+              ...videoStream.getVideoTracks()
+            ]);
+            console.log('✅ Successfully combined audio and video streams');
+            return combined;
+          } else if (audioStream) {
+            console.log('⚠️ Only audio available');
+            return audioStream;
+          } else if (videoStream) {
+            console.log('⚠️ Only video available');
+            return videoStream;
+          }
+        } catch (fallbackError) {
+          console.error('❌ Fallback strategy failed:', fallbackError);
+          throw error; // Throw original error
+        }
+      }
+
+      throw error;
+    }
   };
+
+
 
   // Load camera state when roomId becomes available
   useEffect(() => {
@@ -631,57 +609,91 @@ export function VideoCall({ roomId, user }) {
       if (!roomId) {
         return;
       }
-      
+
       // Only initialize media if we don't have a stream yet
       if (stream || localStreamRef.current) {
         return;
       }
-      
+
       setError("");
-      
+
       // Check if we're on HTTPS (required for WebRTC)
       if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
         setError("Camera/microphone access requires HTTPS. Please ensure you're accessing the site over a secure connection.");
         return;
       }
-      
+
       // Check if getUserMedia is supported
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setError("Your browser doesn't support camera/microphone access. Please update to a modern browser.");
         return;
       }
-      
+
+      // Pre-check permissions
+      const permissions = await checkMediaPermissions();
+      if (permissions.camera === 'denied' || permissions.microphone === 'denied') {
+        setError("Camera/microphone access has been blocked. Please check your browser settings and allow access for this site.");
+        return;
+      }
+
+      console.log('🎥 Initializing media devices...');
+
       try {
-        
-        // Always request both audio and video initially
-        const media = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: { width: 1280, height: 720 },
-        });
-        
+        // Define constraints with fallback options
+        const constraints = {
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 30, max: 60 }
+          }
+        };
+
+        // Try to get media with fallback strategy
+        const media = await getUserMediaWithFallback(constraints);
+
         if (cancelled) {
           media.getTracks().forEach(stopTrack);
           return;
         }
-        
+
+        // Log successful media access
+        const audioTracks = media.getAudioTracks();
+        const videoTracks = media.getVideoTracks();
+        console.log('📊 Media access successful:', {
+          audio: audioTracks.length > 0 ? `${audioTracks[0].label} (${audioTracks[0].getSettings().sampleRate}Hz)` : 'none',
+          video: videoTracks.length > 0 ? `${videoTracks[0].label} (${videoTracks[0].getSettings().width}x${videoTracks[0].getSettings().height})` : 'none'
+        });
+
         setStream(media);
         localStreamRef.current = media;
         setMediaAccessGranted(true);
-        
+
         // Set up video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = media;
-          await localVideoRef.current.play().catch(() => {});
+          await localVideoRef.current.play().catch((playError) => {
+            console.error('❌ Failed to play video:', playError);
+          });
         }
-        
-        
+
       } catch (e) {
         if (cancelled) return;
-        
-        console.error('❌ Failed to initialize media:', e);
+
+        console.error('❌ Failed to initialize media:', {
+          name: e.name,
+          message: e.message,
+          stack: e.stack
+        });
+
         let errorMessage = "Could not access camera/microphone";
         let helpText = "";
-        
+        let canRetry = true;
+
         if (e.name === 'NotAllowedError') {
           errorMessage = "Camera/microphone access denied";
           helpText = "Please click 'Allow' when your browser asks for camera/microphone permissions, or check your browser settings to enable access for this site.";
@@ -690,7 +702,8 @@ export function VideoCall({ roomId, user }) {
           helpText = "Please ensure your camera and microphone are connected and not being used by another application.";
         } else if (e.name === 'OverconstrainedError') {
           errorMessage = "Camera/microphone constraints cannot be satisfied";
-          helpText = "Your camera/microphone may not support the required resolution. Try refreshing the page.";
+          helpText = "Your camera/microphone may not support the required resolution. The app will try lower quality settings.";
+          canRetry = true; // Allow retry with lower constraints
         } else if (e.name === 'NotReadableError') {
           errorMessage = "Camera/microphone is already in use";
           helpText = "Please close other applications that might be using your camera/microphone and try again.";
@@ -700,9 +713,13 @@ export function VideoCall({ roomId, user }) {
         } else if (e.name === 'SecurityError') {
           errorMessage = "Camera/microphone access blocked by security settings";
           helpText = "This site must be served over HTTPS for camera/microphone access. Please ensure you're using a secure connection.";
+          canRetry = false;
+        } else {
+          helpText = `Technical details: ${e.name} - ${e.message}`;
         }
-        
+
         setError(`${errorMessage}. ${helpText}`);
+        setMediaAccessGranted(false);
       }
     };
 
@@ -1207,6 +1224,137 @@ export function VideoCall({ roomId, user }) {
     window.location.hash = '';
     // Alternative: use window.location.href to go to root
     // window.location.href = location.origin;
+  };
+
+  // Retry media access with improved logic
+  const retryMediaAccess = async () => {
+    console.log('🔄 Retrying media access...');
+
+    // Clear current stream
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(stopTrack);
+      localStreamRef.current = null;
+    }
+    setStream(null);
+    setError("");
+    setMediaAccessGranted(false);
+
+    // Re-initialize media with improved logic
+    const initializeMedia = async () => {
+      setError("");
+
+      // Check if we're on HTTPS (required for WebRTC)
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        setError("Camera/microphone access requires HTTPS. Please ensure you're accessing the site over a secure connection.");
+        return;
+      }
+
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError("Your browser doesn't support camera/microphone access. Please update to a modern browser.");
+        return;
+      }
+
+      // Pre-check permissions
+      const permissions = await checkMediaPermissions();
+      if (permissions.camera === 'denied' || permissions.microphone === 'denied') {
+        setError("Camera/microphone access has been blocked. Please check your browser settings and allow access for this site.");
+        return;
+      }
+
+      try {
+        // Define constraints - use lower quality if previous attempt failed
+        const constraints = {
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: useLowQuality ? {
+            width: { ideal: 640, max: 1280 },
+            height: { ideal: 480, max: 720 },
+            frameRate: { ideal: 15, max: 30 }
+          } : {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 30, max: 60 }
+          }
+        };
+
+        console.log('🎥 Retrying with constraints:', constraints);
+
+        // Try to get media with fallback strategy
+        const media = await getUserMediaWithFallback(constraints);
+
+        // Log successful media access
+        const audioTracks = media.getAudioTracks();
+        const videoTracks = media.getVideoTracks();
+        console.log('📊 Media access successful on retry:', {
+          audio: audioTracks.length > 0 ? `${audioTracks[0].label} (${audioTracks[0].getSettings().sampleRate}Hz)` : 'none',
+          video: videoTracks.length > 0 ? `${videoTracks[0].label} (${videoTracks[0].getSettings().width}x${videoTracks[0].getSettings().height})` : 'none'
+        });
+
+        setStream(media);
+        localStreamRef.current = media;
+        setMediaAccessGranted(true);
+        setUseLowQuality(false); // Reset for future attempts
+
+        // Set up video element
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = media;
+          await localVideoRef.current.play().catch((playError) => {
+            console.error('❌ Failed to play video on retry:', playError);
+          });
+        }
+
+      } catch (e) {
+        console.error('❌ Retry failed:', {
+          name: e.name,
+          message: e.message,
+          stack: e.stack
+        });
+
+        let errorMessage = "Could not access camera/microphone";
+        let helpText = "";
+        let shouldTryLowQuality = false;
+
+        if (e.name === 'NotAllowedError') {
+          errorMessage = "Camera/microphone access denied";
+          helpText = "Please click 'Allow' when your browser asks for camera/microphone permissions, or check your browser settings to enable access for this site.";
+        } else if (e.name === 'NotFoundError') {
+          errorMessage = "No camera/microphone found";
+          helpText = "Please ensure your camera and microphone are connected and not being used by another application.";
+        } else if (e.name === 'OverconstrainedError') {
+          errorMessage = "Camera/microphone constraints cannot be satisfied";
+          helpText = "Trying with lower quality settings...";
+          shouldTryLowQuality = !useLowQuality; // Try low quality if not already tried
+        } else if (e.name === 'NotReadableError') {
+          errorMessage = "Camera/microphone is already in use";
+          helpText = "Please close other applications that might be using your camera/microphone and try again.";
+        } else if (e.name === 'AbortError') {
+          errorMessage = "Camera/microphone access was interrupted";
+          helpText = "The request was interrupted. Please try again.";
+        } else if (e.name === 'SecurityError') {
+          errorMessage = "Camera/microphone access blocked by security settings";
+          helpText = "This site must be served over HTTPS for camera/microphone access. Please ensure you're using a secure connection.";
+        } else {
+          helpText = `Technical details: ${e.name} - ${e.message}`;
+        }
+
+        if (shouldTryLowQuality) {
+          console.log('🔄 Switching to low quality mode and retrying...');
+          setUseLowQuality(true);
+          // Auto-retry with low quality
+          setTimeout(() => retryMediaAccess(), 100);
+          return;
+        }
+
+        setError(`${errorMessage}. ${helpText}`);
+        setMediaAccessGranted(false);
+      }
+    };
+
+    initializeMedia();
   };
 
   const btnOn = "bg-green-500 text-white hover:bg-green-400 hover:ring-4 hover:ring-green-300/40 hover:shadow-xl";
