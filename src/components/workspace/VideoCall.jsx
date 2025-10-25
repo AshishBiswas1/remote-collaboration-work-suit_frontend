@@ -88,6 +88,8 @@ export function VideoCall({ roomId, user }) {
     return saved !== null ? JSON.parse(saved) : true; // Default to true if not set
   };
 
+  const displayName = user?.name || user?.email || 'You';
+
   const [stream, setStream] = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const socketRef = useRef(null);
@@ -99,6 +101,8 @@ export function VideoCall({ roomId, user }) {
   const [screenOn, setScreenOn] = useState(false);
   const [screenSharingPeers, setScreenSharingPeers] = useState(new Set());
   const [handRaised, setHandRaised] = useState(false);
+  const [error, setError] = useState("");
+  const [activePanel, setActivePanel] = useState(null); // For side panels: 'people', 'chat', 'activities', 'more'
   const [mediaAccessGranted, setMediaAccessGranted] = useState(false);
   const [useLowQuality, setUseLowQuality] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
