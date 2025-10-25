@@ -122,27 +122,64 @@ export function VideoCall({ roomId, user }) {
   const onlineUsers = chatConnected ? new Set(chatOnlineUsers.map(u => `${u.id}:${u.name}`)) : fallbackOnlineUsers;
   const isConnected = chatConnected || fallbackConnected;
 
-  // Check media permissions and provide guidance
-  const checkMediaPermissions = async () => {
+  // Check camera availability before getUserMedia
+  const checkCameraAvailability = async () => {
     try {
-      if (!navigator.permissions) {
-        console.warn('Permissions API not supported');
-        return { camera: 'unknown', microphone: 'unknown' };
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      
+      console.log('📹 Available cameras:', videoDevices.map(d => ({
+        deviceId: d.deviceId,
+        label: d.label,
+        groupId: d.groupId
+      })));
+      
+      if (videoDevices.length === 0) {
+        throw new Error('NoCamera: No video input devices found');
       }
-
-      const [cameraPermission, micPermission] = await Promise.all([
-        navigator.permissions.query({ name: 'camera' }).catch(() => ({ state: 'unknown' })),
-        navigator.permissions.query({ name: 'microphone' }).catch(() => ({ state: 'unknown' }))
-      ]);
-
-      console.log('Media permissions:', { camera: cameraPermission.state, microphone: micPermission.state });
-      return {
-        camera: cameraPermission.state,
-        microphone: micPermission.state
-      };
+      
+      return videoDevices;
     } catch (e) {
-      console.warn('Could not check permissions:', e);
-      return { camera: 'unknown', microphone: 'unknown' };
+      console.error('Camera detection failed:', e);
+      throw e;
+    }
+  };
+
+  // Manual device refresh function
+  const refreshDevices = async () => {
+    console.log('🔄 Refreshing media devices...');
+    
+    // Stop all current tracks
+    localStreamRef.current?.getTracks()?.forEach(track => {
+      console.log(`🛑 Stopping ${track.kind} track: ${track.label}`);
+      track.stop();
+    });
+    localStreamRef.current = null;
+    setStream(null);
+    setError("");
+    setMediaAccessGranted(false);
+    
+    // Wait for hardware release
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Re-enumerate devices
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      const audioDevices = devices.filter(d => d.kind === 'audioinput');
+      
+      console.log('Available after refresh:', {
+        cameras: videoDevices.length,
+        microphones: audioDevices.length,
+        cameras: videoDevices.map(d => d.label),
+        microphones: audioDevices.map(d => d.label)
+      });
+      
+      // Retry initialization
+      await retryMediaAccess();
+    } catch (e) {
+      console.error('Device refresh failed:', e);
+      setError('Failed to refresh devices: ' + e.message);
     }
   };
 
@@ -642,8 +679,17 @@ export function VideoCall({ roomId, user }) {
 
       console.log('🎥 Initializing media devices...');
 
+      // Check camera availability first
+      let availableCameras;
       try {
-        // Define constraints with fallback options
+        availableCameras = await checkCameraAvailability();
+      } catch (cameraError) {
+        console.warn('Camera detection failed:', cameraError);
+        // Continue anyway - might still work
+      }
+
+      try {
+        // Define constraints with device selection
         const constraints = {
           audio: {
             echoCancellation: true,
@@ -653,7 +699,9 @@ export function VideoCall({ roomId, user }) {
           video: {
             width: { ideal: 1280, max: 1920 },
             height: { ideal: 720, max: 1080 },
-            frameRate: { ideal: 30, max: 60 }
+            frameRate: { ideal: 30, max: 60 },
+            // Use default device to avoid conflicts with multiple cameras
+            deviceId: { ideal: 'default' }
           }
         };
 
@@ -712,8 +760,20 @@ export function VideoCall({ roomId, user }) {
           helpText = "Your camera/microphone may not support the required resolution. The app will try lower quality settings.";
           canRetry = true; // Allow retry with lower constraints
         } else if (e.name === 'NotReadableError') {
-          errorMessage = "Camera/microphone hardware is busy";
-          helpText = "Another application is currently using your camera/microphone. Please close other video calling apps, browser tabs with camera access, or screen recording software, then try again.";
+          errorMessage = "Camera hardware is busy";
+          helpText = `Another application or browser tab is using your camera. Common culprits:
+    • Other browser tabs with video calls (Google Meet, Zoom web, etc.)
+    • Desktop apps: Zoom, Microsoft Teams, Discord, Skype, OBS Studio
+    • Screen recording: Loom, Camtasia, QuickTime Player
+    • Camera apps: Windows Camera, Cheese (Linux), FaceTime (Mac)
+    • Virtual camera software: OBS Virtual Camera, Snap Camera
+
+    Steps to fix:
+    1. Close all applications using the camera
+    2. In Chrome/Edge: Look for camera icon 📷 in address bar of other tabs and stop them
+    3. In Firefox: about:preferences#privacy > Permissions > Camera > Settings > Remove entries
+    4. Restart your browser completely (not just close tab)
+    5. On Linux: Run 'lsof /dev/video0' in terminal to find blocking process`;
         } else if (e.name === 'AbortError') {
           errorMessage = "Camera/microphone access was interrupted";
           helpText = "The request was interrupted. Please try again.";
@@ -1359,8 +1419,20 @@ export function VideoCall({ roomId, user }) {
           helpText = "Trying with lower quality settings...";
           shouldTryLowQuality = !useLowQuality; // Try low quality if not already tried
         } else if (e.name === 'NotReadableError') {
-          errorMessage = "Camera/microphone hardware is busy";
-          helpText = "Another application is currently using your camera/microphone. Please close other video calling apps, browser tabs with camera access, or screen recording software, then try again.";
+          errorMessage = "Camera hardware is busy";
+          helpText = `Another application or browser tab is using your camera. Common culprits:
+    • Other browser tabs with video calls (Google Meet, Zoom web, etc.)
+    • Desktop apps: Zoom, Microsoft Teams, Discord, Skype, OBS Studio
+    • Screen recording: Loom, Camtasia, QuickTime Player
+    • Camera apps: Windows Camera, Cheese (Linux), FaceTime (Mac)
+    • Virtual camera software: OBS Virtual Camera, Snap Camera
+
+    Steps to fix:
+    1. Close all applications using the camera
+    2. In Chrome/Edge: Look for camera icon 📷 in address bar of other tabs and stop them
+    3. In Firefox: about:preferences#privacy > Permissions > Camera > Settings > Remove entries
+    4. Restart your browser completely (not just close tab)
+    5. On Linux: Run 'lsof /dev/video0' in terminal to find blocking process`;
         } else if (e.name === 'AbortError') {
           errorMessage = "Camera/microphone access was interrupted";
           helpText = "The request was interrupted. Please try again.";
