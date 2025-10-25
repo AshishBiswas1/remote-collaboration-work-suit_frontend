@@ -145,6 +145,34 @@ export function VideoCall({ roomId, user }) {
     }
   };
 
+  // Check media permissions using Permissions API
+  const checkMediaPermissions = async () => {
+    try {
+      if (!navigator.permissions) {
+        console.warn('Permissions API not supported, assuming granted');
+        return { camera: 'granted', microphone: 'granted' };
+      }
+
+      const [cameraPerm, micPerm] = await Promise.all([
+        navigator.permissions.query({ name: 'camera' }).catch(() => ({ state: 'prompt' })),
+        navigator.permissions.query({ name: 'microphone' }).catch(() => ({ state: 'prompt' }))
+      ]);
+
+      console.log('📋 Media permissions:', {
+        camera: cameraPerm.state,
+        microphone: micPerm.state
+      });
+
+      return {
+        camera: cameraPerm.state,
+        microphone: micPerm.state
+      };
+    } catch (e) {
+      console.warn('Permission check failed:', e);
+      return { camera: 'prompt', microphone: 'prompt' };
+    }
+  };
+
   // Manual device refresh function
   const refreshDevices = async () => {
     console.log('🔄 Refreshing media devices...');
