@@ -179,7 +179,7 @@ export function VideoCall({ roomId, user }) {
             console.log('✅ Successfully combined audio and video streams');
             return combined;
           } else if (audioStream) {
-            console.log('⚠️ Only audio available');
+            console.log('⚠️ Only audio available - camera not accessible');
             return audioStream;
           } else if (videoStream) {
             console.log('⚠️ Only video available');
@@ -677,6 +677,9 @@ export function VideoCall({ roomId, user }) {
         localStreamRef.current = media;
         setMediaAccessGranted(true);
 
+        // Update camera state based on whether video is actually available
+        setCamOn(videoTracks.length > 0);
+
         // Set up video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = media;
@@ -709,8 +712,8 @@ export function VideoCall({ roomId, user }) {
           helpText = "Your camera/microphone may not support the required resolution. The app will try lower quality settings.";
           canRetry = true; // Allow retry with lower constraints
         } else if (e.name === 'NotReadableError') {
-          errorMessage = "Camera/microphone is already in use";
-          helpText = "Please close other applications that might be using your camera/microphone and try again.";
+          errorMessage = "Camera/microphone hardware is busy";
+          helpText = "Another application is currently using your camera/microphone. Please close other video calling apps, browser tabs with camera access, or screen recording software, then try again.";
         } else if (e.name === 'AbortError') {
           errorMessage = "Camera/microphone access was interrupted";
           helpText = "The request was interrupted. Please try again.";
@@ -1220,10 +1223,30 @@ export function VideoCall({ roomId, user }) {
   };
 
   const leaveCall = () => {
-    // Stop all tracks before leaving
-    stream?.getTracks()?.forEach(stopTrack);
-    screenStream?.getTracks()?.forEach(stopTrack);
-    
+    console.log('👋 Leaving video call - stopping all media hardware');
+
+    // Stop all tracks to ensure camera/microphone hardware is turned off
+    stream?.getTracks()?.forEach(track => {
+      console.log(`🛑 Stopping ${track.kind} track: ${track.label}`);
+      track.stop();
+    });
+
+    screenStream?.getTracks()?.forEach(track => {
+      console.log(`🛑 Stopping screen ${track.kind} track: ${track.label}`);
+      track.stop();
+    });
+
+    // Clear streams
+    setStream(null);
+    localStreamRef.current = null;
+    setScreenStream(null);
+
+    // Reset states
+    setCamOn(false);
+    setMicOn(true); // Reset to default
+    setScreenOn(false);
+    setMediaAccessGranted(false);
+
     // Navigate to landing page (remove all hash parameters)
     window.location.hash = '';
     // Alternative: use window.location.href to go to root
@@ -1303,6 +1326,9 @@ export function VideoCall({ roomId, user }) {
         setMediaAccessGranted(true);
         setUseLowQuality(false); // Reset for future attempts
 
+        // Update camera state based on whether video is actually available
+        setCamOn(videoTracks.length > 0);
+
         // Set up video element
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = media;
@@ -1333,8 +1359,8 @@ export function VideoCall({ roomId, user }) {
           helpText = "Trying with lower quality settings...";
           shouldTryLowQuality = !useLowQuality; // Try low quality if not already tried
         } else if (e.name === 'NotReadableError') {
-          errorMessage = "Camera/microphone is already in use";
-          helpText = "Please close other applications that might be using your camera/microphone and try again.";
+          errorMessage = "Camera/microphone hardware is busy";
+          helpText = "Another application is currently using your camera/microphone. Please close other video calling apps, browser tabs with camera access, or screen recording software, then try again.";
         } else if (e.name === 'AbortError') {
           errorMessage = "Camera/microphone access was interrupted";
           helpText = "The request was interrupted. Please try again.";
