@@ -99,8 +99,7 @@ export function VideoCall({ roomId, user }) {
   const [screenOn, setScreenOn] = useState(false);
   const [screenSharingPeers, setScreenSharingPeers] = useState(new Set());
   const [handRaised, setHandRaised] = useState(false);
-  const [error, setError] = useState("");
-  const [activePanel, setActivePanel] = useState(null); // For side panels: 'people', 'chat', 'activities', 'more'
+  const [mediaAccessGranted, setMediaAccessGranted] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
 
   // Chat state - using Socket.IO for real-time sync
@@ -118,17 +117,103 @@ export function VideoCall({ roomId, user }) {
   const onlineUsers = chatConnected ? new Set(chatOnlineUsers.map(u => `${u.id}:${u.name}`)) : fallbackOnlineUsers;
   const isConnected = chatConnected || fallbackConnected;
 
-  const displayName = useMemo(
-    () => user?.name || user?.email || "You",
-    [user]
-  );
-
-  // Auto-scroll chat to bottom when new messages arrive
-  useEffect(() => {
-    if (activePanel === 'chat' && chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+  // Check media permissions
+  const checkMediaPermissions = async () => {
+    try {
+      if (!navigator.permissions) {
+        return { camera: 'unknown', microphone: 'unknown' };
+      }
+      
+      const [cameraPermission, micPermission] = await Promise.all([
+        navigator.permissions.query({ name: 'camera' }),
+        navigator.permissions.query({ name: 'microphone' })
+      ]);
+      
+      return {
+        camera: cameraPermission.state,
+        microphone: micPermission.state
+      };
+    } catch (e) {
+      console.warn('Could not check permissions:', e);
+      return { camera: 'unknown', microphone: 'unknown' };
     }
-  }, [messages, activePanel]);
+  };
+
+  // Retry media access
+  const retryMediaAccess = () => {
+    // Clear current stream
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(stopTrack);
+      localStreamRef.current = null;
+    }
+    setStream(null);
+    setError("");
+    setMediaAccessGranted(false);
+    
+    // Re-initialize media
+    const initializeMedia = async () => {
+      setError("");
+      
+      // Check if we're on HTTPS (required for WebRTC)
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        setError("Camera/microphone access requires HTTPS. Please ensure you're accessing the site over a secure connection.");
+        return;
+      }
+      
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError("Your browser doesn't support camera/microphone access. Please update to a modern browser.");
+        return;
+      }
+      
+      try {
+        // Always request both audio and video initially
+        const media = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: { width: 1280, height: 720 },
+        });
+        
+        setStream(media);
+        localStreamRef.current = media;
+        setMediaAccessGranted(true);
+        
+        // Set up video element
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = media;
+          await localVideoRef.current.play().catch(() => {});
+        }
+        
+      } catch (e) {
+        console.error('❌ Failed to initialize media:', e);
+        let errorMessage = "Could not access camera/microphone";
+        let helpText = "";
+        
+        if (e.name === 'NotAllowedError') {
+          errorMessage = "Camera/microphone access denied";
+          helpText = "Please click 'Allow' when your browser asks for camera/microphone permissions, or check your browser settings to enable access for this site.";
+        } else if (e.name === 'NotFoundError') {
+          errorMessage = "No camera/microphone found";
+          helpText = "Please ensure your camera and microphone are connected and not being used by another application.";
+        } else if (e.name === 'OverconstrainedError') {
+          errorMessage = "Camera/microphone constraints cannot be satisfied";
+          helpText = "Your camera/microphone may not support the required resolution. Try refreshing the page.";
+        } else if (e.name === 'NotReadableError') {
+          errorMessage = "Camera/microphone is already in use";
+          helpText = "Please close other applications that might be using your camera/microphone and try again.";
+        } else if (e.name === 'AbortError') {
+          errorMessage = "Camera/microphone access was interrupted";
+          helpText = "The request was interrupted. Please try again.";
+        } else if (e.name === 'SecurityError') {
+          errorMessage = "Camera/microphone access blocked by security settings";
+          helpText = "This site must be served over HTTPS for camera/microphone access. Please ensure you're using a secure connection.";
+        }
+        
+        setError(`${errorMessage}. ${helpText}`);
+      }
+    };
+
+    initializeMedia();
+  };
 
   // Load camera state when roomId becomes available
   useEffect(() => {
@@ -553,6 +638,19 @@ export function VideoCall({ roomId, user }) {
       }
       
       setError("");
+      
+      // Check if we're on HTTPS (required for WebRTC)
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        setError("Camera/microphone access requires HTTPS. Please ensure you're accessing the site over a secure connection.");
+        return;
+      }
+      
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError("Your browser doesn't support camera/microphone access. Please update to a modern browser.");
+        return;
+      }
+      
       try {
         
         // Always request both audio and video initially
@@ -568,6 +666,7 @@ export function VideoCall({ roomId, user }) {
         
         setStream(media);
         localStreamRef.current = media;
+        setMediaAccessGranted(true);
         
         // Set up video element
         if (localVideoRef.current) {
@@ -581,16 +680,29 @@ export function VideoCall({ roomId, user }) {
         
         console.error('❌ Failed to initialize media:', e);
         let errorMessage = "Could not access camera/microphone";
+        let helpText = "";
         
         if (e.name === 'NotAllowedError') {
-          errorMessage = "Camera/microphone access denied. Please allow access and refresh.";
+          errorMessage = "Camera/microphone access denied";
+          helpText = "Please click 'Allow' when your browser asks for camera/microphone permissions, or check your browser settings to enable access for this site.";
         } else if (e.name === 'NotFoundError') {
-          errorMessage = "No camera/microphone found on this device.";
+          errorMessage = "No camera/microphone found";
+          helpText = "Please ensure your camera and microphone are connected and not being used by another application.";
         } else if (e.name === 'OverconstrainedError') {
-          errorMessage = "Camera/microphone constraints cannot be satisfied.";
+          errorMessage = "Camera/microphone constraints cannot be satisfied";
+          helpText = "Your camera/microphone may not support the required resolution. Try refreshing the page.";
+        } else if (e.name === 'NotReadableError') {
+          errorMessage = "Camera/microphone is already in use";
+          helpText = "Please close other applications that might be using your camera/microphone and try again.";
+        } else if (e.name === 'AbortError') {
+          errorMessage = "Camera/microphone access was interrupted";
+          helpText = "The request was interrupted. Please try again.";
+        } else if (e.name === 'SecurityError') {
+          errorMessage = "Camera/microphone access blocked by security settings";
+          helpText = "This site must be served over HTTPS for camera/microphone access. Please ensure you're using a secure connection.";
         }
         
-        setError(errorMessage);
+        setError(`${errorMessage}. ${helpText}`);
       }
     };
 
@@ -1613,9 +1725,37 @@ export function VideoCall({ roomId, user }) {
       </div>
 
       {error && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-60 pointer-events-none">
-          <div className="bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg">
-            {error}
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-60 pointer-events-auto max-w-md">
+          <div className="bg-red-600 text-white px-6 py-4 rounded-lg shadow-lg border border-red-500">
+            <div className="flex items-start space-x-3">
+              <div className="flex-shrink-0">
+                <svg className="w-6 h-6 text-red-200" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="none"/>
+                  <path d="M13 17H11V15H13V17ZM13 13H11V7H13V13Z"/>
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold mb-1">Media Access Error</h3>
+                <p className="text-sm text-red-100 leading-relaxed">{error}</p>
+                <div className="mt-3 text-xs text-red-200">
+                  <p>💡 <strong>Troubleshooting tips:</strong></p>
+                  <ul className="mt-1 space-y-1 list-disc list-inside">
+                    <li>Click "Allow" when prompted for camera/microphone access</li>
+                    <li>Check browser settings to enable media permissions</li>
+                    <li>Ensure no other apps are using your camera/microphone</li>
+                    <li>Try refreshing the page</li>
+                  </ul>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={retryMediaAccess}
+                    className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-sm font-medium rounded-md transition-colors"
+                  >
+                    Retry Access
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
